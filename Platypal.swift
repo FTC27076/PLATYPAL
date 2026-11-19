@@ -247,7 +247,7 @@ enum FinderBridge {
         end tell
         set out to ""
         repeat with n in theNames
-            set out to out & n & linefeed
+            set out to out & (contents of n) & linefeed
         end repeat
         return out
         """
