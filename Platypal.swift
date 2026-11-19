@@ -202,14 +202,18 @@ enum FinderBridge {
 
     static func desktopFolders(_ completion: @escaping @Sendable @MainActor ([DesktopFolder]) -> Void) {
         let script = """
+        -- Ask for all names and all positions in one go. Looping over "every folder of desktop"
+        -- one by one fails on some Macs with -1728 ("Can't get item 1 of desktop").
         tell application "Finder"
-            set out to ""
-            repeat with f in (every folder of desktop)
-                set p to desktop position of f
-                set out to out & (name of f) & tab & (item 1 of p) & tab & (item 2 of p) & linefeed
-            end repeat
-            return out
+            set theNames to name of every folder of desktop
+            set thePositions to desktop position of every folder of desktop
         end tell
+        set out to ""
+        repeat with i from 1 to count of theNames
+            set p to item i of thePositions
+            set out to out & (item i of theNames) & tab & (item 1 of p) & tab & (item 2 of p) & linefeed
+        end repeat
+        return out
         """
         run(script) { text in
             lastFolderReply = text
@@ -239,12 +243,13 @@ enum FinderBridge {
         let escaped = name.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let script = """
         tell application "Finder"
-            set out to ""
-            repeat with i in (every item of folder "\(escaped)" of desktop)
-                set out to out & (name of i) & linefeed
-            end repeat
-            return out
+            set theNames to name of every item of folder "\(escaped)" of desktop
         end tell
+        set out to ""
+        repeat with n in theNames
+            set out to out & n & linefeed
+        end repeat
+        return out
         """
         run(script) { text in
             completion(text.map { $0.split(separator: "\n").map(String.init) })
