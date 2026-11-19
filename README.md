@@ -39,6 +39,38 @@ Because `build.sh` signs the app ad hoc, macOS may ask again after each rebuild.
 
 Hiding only reads where windows are, never their titles or contents, so it needs no permission.
 
+## Debugging the folder trick
+
+If dropping him on a folder does nothing:
+
+1. Right-click him → **Debug Desktop Folders**. He tells you what Finder said, and an overlay shows:
+   - a **crosshair** where Finder says each folder icon is, with its name and coordinates
+   - a **red dashed box** per folder: the drop zone. It turns green while his feet are inside it
+   - a **yellow dot** at his feet. That dot must be inside a box when you let go
+   - a live readout of his feet, your cursor, how many folders he knows about, and how fast your last drop was
+
+   With debug mode on, every drop also makes him say why it missed ("let go too fast",
+   "nearest is 'School': 40 pt left, 120 pt below my feet", and so on).
+
+2. If the crosshairs sit off from your icons by the same amount each time, set `kIconOffset`
+   in `Platypal.swift` to that gap and rebuild.
+
+3. If he says Finder permission is blocked (error -1743), reset it and relaunch. macOS should
+   ask again:
+   ```bash
+   tccutil reset AppleEvents local.platypal
+   ```
+
+4. To check Finder directly, outside Platypal:
+   ```bash
+   osascript -e 'tell application "Finder" to get {name, desktop position} of every folder of desktop'
+   ```
+
+5. To see his logs, run the binary from Terminal instead of `open`. Every Finder query is logged there:
+   ```bash
+   ./Platypal.app/Contents/MacOS/Platypal
+   ```
+
 ## Tweaking
 
 Everything is in `Platypal.swift`:

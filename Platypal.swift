@@ -156,26 +156,45 @@ struct DesktopFolder {
 
 /// If he lands a bit off from the icons on your Mac, nudge this (Cocoa points; +y is up).
 let kIconOffset = CGVector(dx: 0, dy: 0)
+let kDropHalfWidth: CGFloat = 56   // how far left/right of the icon centre still counts
+let kMaxDropSpeed: CGFloat = 1200  // faster than this is a throw, not a drop
 
 enum FinderBridge {
     /// Runs AppleScript through osascript off the main thread. The first run makes macOS ask
     /// "Platypal wants to control Finder". If you say no, the folder trick just won't happen.
+    /// The last error osascript reported (nil if the last run succeeded). Shown in debug mode.
+    @MainActor static var lastError: String?
+
     static func run(_ script: String, completion: @escaping @Sendable @MainActor (String?) -> Void) {
         DispatchQueue.global(qos: .utility).async {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             proc.arguments = ["-e", script]
-            let out = Pipe()
+            let out = Pipe(), err = Pipe()
             proc.standardOutput = out
-            proc.standardError = Pipe()
+            proc.standardError = err
             var result: String?
-            if (try? proc.run()) != nil {
+            var error: String?
+            do {
+                try proc.run()
                 let data = out.fileHandleForReading.readDataToEndOfFile()
+                let errData = err.fileHandleForReading.readDataToEndOfFile()
                 proc.waitUntilExit()
-                if proc.terminationStatus == 0 { result = String(data: data, encoding: .utf8) }
+                if proc.terminationStatus == 0 {
+                    result = String(data: data, encoding: .utf8)
+                } else {
+                    error = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if error?.isEmpty ?? true { error = "osascript exited with status \(proc.terminationStatus)" }
+                }
+            } catch let e {
+                error = "Couldn't launch osascript: \(e.localizedDescription)"
             }
-            let r = result
-            Task { @MainActor in completion(r) }
+            let r = result, e = error
+            NSLog("Platypal osascript → %@", e.map { "ERROR: \($0)" } ?? "OK:\n\(r ?? "")")
+            Task { @MainActor in
+                lastError = e
+                completion(r)
+            }
         }
     }
 
@@ -490,8 +509,12 @@ final class Pet {
 
     // MARK: Desktop folders
 
-    func refreshFolders() {
-        FinderBridge.desktopFolders { [weak self] found in self?.folders = found }
+    func refreshFolders(announce: Bool = false) {
+        FinderBridge.desktopFolders { [weak self] found in
+            guard let self else { return }
+            self.folders = found
+            if announce { self.say(self.folderStatus(), duration: 6) }
+        }
     }
 
     private func enterFolder(_ f: DesktopFolder) {
@@ -558,18 +581,54 @@ final class Pet {
 
         // Dropped (not thrown) on, just under, or above a desktop folder? He falls into it.
         targetFolder = nil
-        if speed < 700 {
-            let near = folders.filter {
-                abs(pos.x - $0.point.x) < 48 && pos.y - $0.point.y > -75 && pos.y - $0.point.y < 400
-            }
-            if let f = near.min(by: { abs(pos.x - $0.point.x) < abs(pos.x - $1.point.x) }) {
-                targetFolder = f
-                vel = CGVector(dx: 0, dy: min(vel.dy, 0))
-                pos.x = f.point.x
-                wasThrown = false
-                spinSpeed = 0
-            }
+        lastDropSpeed = speed
+        if speed < kMaxDropSpeed, let f = folders.first(where: { Pet.dropZone(for: $0).contains(pos) }) {
+            targetFolder = f
+            vel = CGVector(dx: 0, dy: min(vel.dy, 0))
+            pos.x = f.point.x
+            wasThrown = false
+            spinSpeed = 0
         }
+        if debugFolders { say(dropDiagnosis(speed: speed), duration: 6) }
+    }
+
+    // MARK: Folder debugging
+
+    var debugFolders = false
+    private(set) var lastDropSpeed: CGFloat = 0
+    var knownFolders: [DesktopFolder] { folders }
+
+    /// Where his feet have to be when you let go for him to fall into folder `f`:
+    /// up to 75 pt under the icon centre, and anywhere up to 400 pt above it.
+    static func dropZone(for f: DesktopFolder) -> CGRect {
+        CGRect(x: f.point.x - kDropHalfWidth, y: f.point.y - 75, width: kDropHalfWidth * 2, height: 475)
+    }
+
+    /// Plain-English reason why the last drop did or didn't hit a folder.
+    private func dropDiagnosis(speed: CGFloat) -> String {
+        if let f = targetFolder { return "Debug: going into \"\(f.name)\"!" }
+        if folders.isEmpty {
+            if let e = FinderBridge.lastError {
+                if e.contains("-1743") || e.lowercased().contains("not authorized") {
+                    return "Debug: macOS won't let me ask Finder (-1743). See README → Debugging."
+                }
+                return "Debug: Finder error: \(e.prefix(120))"
+            }
+            return "Debug: Finder says there are no folders on the desktop."
+        }
+        if speed >= kMaxDropSpeed { return "Debug: let go too fast (\(Int(speed)) pt/s). Hold still, then let go." }
+        let nearest = folders.min { hypot(pos.x - $0.point.x, pos.y - $0.point.y) < hypot(pos.x - $1.point.x, pos.y - $1.point.y) }!
+        let dx = Int(nearest.point.x - pos.x), dy = Int(nearest.point.y - pos.y)
+        return "Debug: missed. Nearest is \"\(nearest.name)\": \(abs(dx)) pt \(dx >= 0 ? "right" : "left"), \(abs(dy)) pt \(dy >= 0 ? "above" : "below") my feet."
+    }
+
+    func folderStatus() -> String {
+        if let e = FinderBridge.lastError, folders.isEmpty {
+            return e.contains("-1743") ? "Debug: Finder permission is blocked (-1743). See README → Debugging."
+                                       : "Debug: Finder error: \(e.prefix(120))"
+        }
+        return folders.isEmpty ? "Debug: I don't see any desktop folders."
+                               : "Debug: I see \(folders.count) folder\(folders.count == 1 ? "" : "s"). Red boxes = drop zones."
     }
 
     private func land(impact: CGFloat) {
@@ -1178,6 +1237,58 @@ final class PetView: NSView {
     }
 }
 
+// MARK: - Folder debug overlay
+
+/// Full-screen, click-through layer that shows where Platypal thinks the desktop folders are.
+final class FolderDebugView: NSView {
+    let pet: Pet
+    init(pet: Pet, frame: NSRect) { self.pet = pet; super.init(frame: frame) }
+    required init?(coder: NSCoder) { fatalError("not used") }
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext, let win = window else { return }
+        ctx.clear(bounds)
+        let o = win.frame.origin
+        func local(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x - o.x, y: p.y - o.y) }
+        let label: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .bold),
+            .foregroundColor: NSColor.white,
+            .backgroundColor: NSColor.black.withAlphaComponent(0.7),
+        ]
+        let feet = local(pet.pos)
+        for f in pet.knownFolders {
+            let zone = Pet.dropZone(for: f).offsetBy(dx: -o.x, dy: -o.y)
+            let hot = Pet.dropZone(for: f).contains(pet.pos)
+            ctx.setFillColor((hot ? NSColor.systemGreen : NSColor.systemRed).withAlphaComponent(0.12).cgColor)
+            ctx.fill(zone)
+            ctx.setStrokeColor((hot ? NSColor.systemGreen : NSColor.systemRed).cgColor)
+            ctx.setLineWidth(2)
+            ctx.setLineDash(phase: 0, lengths: [6, 4])
+            ctx.stroke(zone)
+            ctx.setLineDash(phase: 0, lengths: [])
+            // Crosshair where Finder says the icon is
+            let c = local(f.point)
+            ctx.setLineWidth(2.5)
+            ctx.move(to: CGPoint(x: c.x - 14, y: c.y)); ctx.addLine(to: CGPoint(x: c.x + 14, y: c.y))
+            ctx.move(to: CGPoint(x: c.x, y: c.y - 14)); ctx.addLine(to: CGPoint(x: c.x, y: c.y + 14))
+            ctx.strokePath()
+            NSAttributedString(string: " \(f.name)  (\(Int(f.point.x)), \(Int(f.point.y))) ", attributes: label)
+                .draw(at: CGPoint(x: c.x + 16, y: c.y + 4))
+        }
+        // His feet: this is the point that has to be inside a box when you let go
+        ctx.setFillColor(NSColor.systemYellow.cgColor)
+        ctx.fillEllipse(in: CGRect(x: feet.x - 6, y: feet.y - 6, width: 12, height: 12))
+        ctx.setStrokeColor(NSColor.black.cgColor); ctx.setLineWidth(1.5)
+        ctx.strokeEllipse(in: CGRect(x: feet.x - 6, y: feet.y - 6, width: 12, height: 12))
+        let mouse = NSEvent.mouseLocation
+        var info = "feet (\(Int(pet.pos.x)), \(Int(pet.pos.y)))   cursor (\(Int(mouse.x)), \(Int(mouse.y)))   "
+        info += "folders: \(pet.knownFolders.count)   last drop speed: \(Int(pet.lastDropSpeed)) (max \(Int(kMaxDropSpeed)))"
+        if let e = FinderBridge.lastError { info += "\nFinder error: \(e)" }
+        NSAttributedString(string: info, attributes: label).draw(at: CGPoint(x: feet.x + 10, y: feet.y - 30))
+    }
+}
+
 // MARK: - Window
 
 final class PetPanel: NSPanel {
@@ -1198,6 +1309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var lastTick = CACurrentMediaTime()
     private var appliedHide: Int?
+    private var debugPanel: NSPanel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Drop in from the top of the screen
@@ -1268,6 +1380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.ignoresMouseEvents = !((hitBox.contains(local) && pet.shrink > 0.5) || view.mouseIsDown)
 
         view.needsDisplay = true
+        debugPanel?.contentView?.needsDisplay = true
     }
 
     private func positionWindow() {
@@ -1294,6 +1407,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         chatty.target = self
         chatty.state = pet.chatterEnabled ? .on : .off
         menu.addItem(chatty)
+        let debug = NSMenuItem(title: "Debug Desktop Folders", action: #selector(menuToggleFolderDebug), keyEquivalent: "")
+        debug.target = self
+        debug.state = pet.debugFolders ? .on : .off
+        menu.addItem(debug)
         menu.addItem(.separator())
         add("Quit Platypal", #selector(menuQuit), key: "q")
         return menu
@@ -1304,6 +1421,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func menuFlip()  { pet.backflip() }
     @objc private func menuDance() { pet.dance() }
     @objc private func menuNap()   { pet.nap() }
+    @objc private func menuToggleFolderDebug() {
+        pet.debugFolders.toggle()
+        if pet.debugFolders {
+            let frame = NSScreen.screens.reduce(NSRect.null) { $0.union($1.frame) }
+            let p = PetPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            p.isOpaque = false
+            p.backgroundColor = .clear
+            p.hasShadow = false
+            p.ignoresMouseEvents = true
+            p.hidesOnDeactivate = false
+            p.level = .floating
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+            p.contentView = FolderDebugView(pet: pet, frame: NSRect(origin: .zero, size: frame.size))
+            p.setFrame(frame, display: false)
+            p.orderFrontRegardless()
+            panel.orderFrontRegardless()   // keep him above the overlay
+            debugPanel = p
+            pet.say("Debug: asking Finder...", duration: 2)
+            pet.refreshFolders(announce: true)
+        } else {
+            debugPanel?.orderOut(nil)
+            debugPanel = nil
+        }
+        statusItem.menu = buildMenu()
+    }
     @objc private func menuHide() {
         if !pet.tryHide() && pet.canAct { pet.say("Nowhere to hide! Open a window near the Dock.", duration: 2.5) }
     }
