@@ -11,6 +11,7 @@
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>LSMinimumSystemVersion</key>   <string>11.0</string>
     <key>LSUIElement</key>              <true/>
+    <key>NSAppleEventsUsageDescription</key><string>Platypal asks Finder where your desktop folders are, so he can jump into them.</string>
     <key>NSHighResolutionCapable</key>  <true/>
 </dict>
 </plist>

@@ -9,6 +9,8 @@
 //   • Drag         → pick him up; let go mid-swing to throw him
 //   • Right-click  → menu (also in the menu bar, paw icon)
 //   • Leave the cursor resting near his face → boop
+//   • Drop him onto a desktop folder icon → he falls into it
+//   • He sometimes hides behind app windows that reach the Dock, then peeks out
 
 import Cocoa
 
@@ -73,6 +75,20 @@ enum Lines {
     static let chase   = ["Ooh, what's that?", "Gonna get that cursor!", "Come back here!"]
     static let caught  = ["Got it! ...now what?", "Hello, little arrow.", "Found you."]
     static let welcomeBack = ["Oh! You're back!", "Welcome back!", "Missed you. Kinda."]
+    static let rustle  = ["*rustle rustle*", "*muffled* ...so many files...", "*thump* Ow.", "*echo* Hellooo?"]
+
+    static func folderFinding(folder: String, items: [String]) -> String {
+        guard let item = items.randomElement() else {
+            return "\"\(folder)\" is empty. Just me and the echo."
+        }
+        let n = items.count
+        let things = n == 1 ? "1 thing" : "\(n) things"
+        return [
+            "Found \(things) in \"\(folder)\". \"\(item)\" looks interesting.",
+            "\"\(item)\"? Bold choice. I didn't touch it, promise.",
+            "Cozy in \"\(folder)\". \(things), zero snacks.",
+        ].pick
+    }
 
     static func greeting() -> String {
         switch Calendar.current.component(.hour, from: Date()) {
@@ -98,11 +114,119 @@ enum Lines {
     }
 }
 
+// MARK: - Other apps' windows (for hiding behind)
+
+struct OtherWindow {
+    let number: Int
+    let frame: CGRect      // Cocoa coordinates (origin bottom-left of the main screen)
+}
+
+@MainActor
+enum Desktop {
+    /// Normal app windows currently on screen, front to back. Window bounds don't need
+    /// Screen Recording permission (only titles do, and we don't read those).
+    static func windows() -> [OtherWindow] {
+        guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return [] }
+        let myPID = Int(ProcessInfo.processInfo.processIdentifier)
+        let mainH = NSScreen.screens.first?.frame.height ?? 0
+        return info.compactMap { w in
+            guard (w[kCGWindowLayer as String] as? Int) == 0,
+                  (w[kCGWindowOwnerPID as String] as? Int) != myPID,
+                  ((w[kCGWindowAlpha as String] as? Double) ?? 1) > 0.1,
+                  let number = w[kCGWindowNumber as String] as? Int,
+                  let dict = w[kCGWindowBounds as String] as? NSDictionary,
+                  let r = CGRect(dictionaryRepresentation: dict as CFDictionary)
+            else { return nil }
+            return OtherWindow(number: number, frame: CGRect(x: r.minX, y: mainH - r.maxY, width: r.width, height: r.height))
+        }
+    }
+
+    static func window(number: Int) -> OtherWindow? {
+        windows().first { $0.number == number }
+    }
+}
+
+// MARK: - Desktop folder icons (via Finder AppleScript)
+
+struct DesktopFolder {
+    let name: String
+    let point: CGPoint     // icon centre, Cocoa coordinates
+}
+
+/// If he lands a bit off from the icons on your Mac, nudge this (Cocoa points; +y is up).
+let kIconOffset = CGVector(dx: 0, dy: 0)
+
+enum FinderBridge {
+    /// Runs AppleScript through osascript off the main thread. The first run makes macOS ask
+    /// "Platypal wants to control Finder". If you say no, the folder trick just won't happen.
+    static func run(_ script: String, completion: @escaping @Sendable @MainActor (String?) -> Void) {
+        DispatchQueue.global(qos: .utility).async {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            proc.arguments = ["-e", script]
+            let out = Pipe()
+            proc.standardOutput = out
+            proc.standardError = Pipe()
+            var result: String?
+            if (try? proc.run()) != nil {
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                proc.waitUntilExit()
+                if proc.terminationStatus == 0 { result = String(data: data, encoding: .utf8) }
+            }
+            let r = result
+            Task { @MainActor in completion(r) }
+        }
+    }
+
+    static func desktopFolders(_ completion: @escaping @Sendable @MainActor ([DesktopFolder]) -> Void) {
+        let script = """
+        tell application "Finder"
+            set out to ""
+            repeat with f in (every folder of desktop)
+                set p to desktop position of f
+                set out to out & (name of f) & tab & (item 1 of p) & tab & (item 2 of p) & linefeed
+            end repeat
+            return out
+        end tell
+        """
+        run(script) { text in
+            let mainH = NSScreen.screens.first?.frame.height ?? 0
+            let folders: [DesktopFolder] = (text ?? "").split(separator: "\n").compactMap { line in
+                let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
+                guard parts.count == 3, let x = Double(parts[1]), let y = Double(parts[2]) else { return nil }
+                // Finder uses top-left-origin coordinates; flip to Cocoa's bottom-left origin.
+                return DesktopFolder(name: String(parts[0]),
+                                     point: CGPoint(x: x + kIconOffset.dx, y: mainH - y + kIconOffset.dy))
+            }
+            completion(folders)
+        }
+    }
+
+    static func contents(ofDesktopFolder name: String, _ completion: @escaping @Sendable @MainActor ([String]?) -> Void) {
+        let escaped = name.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+        tell application "Finder"
+            set out to ""
+            repeat with i in (every item of folder "\(escaped)" of desktop)
+                set out to out & (name of i) & linefeed
+            end repeat
+            return out
+        end tell
+        """
+        run(script) { text in
+            completion(text.map { $0.split(separator: "\n").map(String.init) })
+        }
+    }
+}
+
 // MARK: - The platypus (state + behaviour)
 
 enum Activity: Equatable {
-    case idle, walk, run, chase, stare, sleep, dance, boop, dizzy, held, airborne
+    case idle, walk, run, chase, stare, sleep, dance, boop, dizzy, held, airborne, hide, folder
 }
+
+enum HidePhase { case approach, sneak, hidden, peek }
 
 enum EyeStyle { case open, closed, happy, dizzy, wide }
 
@@ -132,6 +256,24 @@ final class Pet {
     var happyTime: Double = 0
     var look = CGVector(dx: 1, dy: 0)
     var mouthOpen: CGFloat = 0
+    var shrink: CGFloat = 1          // < 1 while he's disappearing into / popping out of a folder
+    var stepping = false             // legs walking this frame
+
+    // Hiding behind windows. AppDelegate watches `hideBehind` and re-layers the window.
+    var hideBehind: Int?
+    private var hidePhase = HidePhase.approach
+    private var hideWin: OtherWindow?
+    private var hideFromLeft = true
+    private var hideCheck: Double = 0
+    private var peekTime: Double = 0
+
+    // Desktop folders
+    private var folders: [DesktopFolder] = []
+    private var targetFolder: DesktopFolder?
+    private var currentFolder: DesktopFolder?
+    private var folderFrom = CGPoint.zero
+    private var folderFinding: String?
+    private var saidRustle = false
 
     // Speech
     var speech: String?
@@ -161,8 +303,9 @@ final class Pet {
         switch activity {
         case .sleep: return .closed
         case .dizzy: return .dizzy
-        case .held, .chase: return .wide
+        case .held, .chase, .folder: return .wide
         case .dance, .boop: return .happy
+        case .hide where hidePhase == .sneak: return .happy
         default:
             if happyTime > 0 { return .happy }
             return blink > 0 ? .closed : .open
@@ -176,6 +319,7 @@ final class Pet {
         activityTime = 0
         activityDuration = duration
         lastBeat = -1
+        if a != .hide { hideBehind = nil }
     }
 
     func say(_ text: String, duration: Double? = nil) {
@@ -238,6 +382,145 @@ final class Pet {
 
     func saySomething() { say(Lines.randomChatter()) }
 
+    // MARK: Hiding behind windows
+
+    /// Picks an app window that reaches down to his floor, walks to its edge, then sneaks behind it.
+    @discardableResult
+    func tryHide() -> Bool {
+        guard canAct else { return false }
+        let a = area
+        let lo = a.minX + kEdge, hi = a.maxX - kEdge
+        let candidates = Desktop.windows().filter {
+            $0.frame.minY <= a.minY + 15 && $0.frame.maxY >= a.minY + 100 &&
+            $0.frame.width >= 300 && $0.frame.intersects(a)
+        }
+        for w in candidates.shuffled() {
+            let leftOut = w.frame.minX - 95, rightOut = w.frame.maxX + 95
+            let leftOK = leftOut >= lo, rightOK = rightOut <= hi
+            let fromLeft: Bool
+            if leftOK && (pos.x < w.frame.midX || !rightOK) { fromLeft = true }
+            else if rightOK { fromLeft = false }
+            else { continue }
+            hideWin = w
+            hideFromLeft = fromLeft
+            hidePhase = .approach
+            targetX = fromLeft ? leftOut : rightOut
+            set(.hide, duration: .infinity)
+            return true
+        }
+        return false
+    }
+
+    private func stillCovered(_ w: OtherWindow) -> OtherWindow? {
+        guard let fresh = Desktop.window(number: w.number),
+              fresh.frame.minY <= area.minY + 15, fresh.frame.maxY >= area.minY + 100 else { return nil }
+        return fresh
+    }
+
+    private func abandonHiding() {
+        set(.idle, duration: 1.5)
+        say("Hey! Who moved my hiding spot?", duration: 2.2)
+    }
+
+    /// Steps toward x. Returns true on arrival.
+    private func walk(toward x: CGFloat, speed: CGFloat, dt: CGFloat) -> Bool {
+        let d = x - pos.x
+        if abs(d) <= speed * dt + 1 { pos.x = x; return true }
+        facing = d > 0 ? 1 : -1
+        pos.x += facing * speed * dt
+        walkPhase += dt * max(8, speed / 9)
+        stepping = true
+        return false
+    }
+
+    private func updateHide(dt: Double) {
+        let fdt = CGFloat(dt)
+        guard var w = hideWin else { set(.idle); return }
+
+        if hidePhase != .approach {
+            hideCheck -= dt
+            if hideCheck <= 0 {
+                hideCheck = 0.5
+                guard let fresh = stillCovered(w) else { abandonHiding(); return }
+                w = fresh
+                hideWin = fresh
+            }
+        }
+        let a = area
+        let f = w.frame
+        let inside = hideFromLeft ? min(f.minX + 130, f.midX) : max(f.maxX - 130, f.midX)
+        let insideX = min(max(inside, a.minX + kEdge), a.maxX - kEdge)
+
+        switch hidePhase {
+        case .approach:
+            if walk(toward: targetX, speed: 110, dt: fdt) {
+                guard let fresh = stillCovered(w) else { set(.idle); return }
+                hideWin = fresh
+                hidePhase = .sneak
+                hideBehind = fresh.number
+                hideCheck = 0.5
+                say("Shh... hiding.", duration: 1.6)
+            }
+            if activityTime > 25 { set(.idle) }   // couldn't get there
+        case .sneak:
+            if walk(toward: insideX, speed: 60, dt: fdt) {
+                hidePhase = .hidden
+                activityTime = 0
+                activityDuration = .random(in: 4...9)
+            }
+        case .hidden:
+            if activityTime > activityDuration {
+                hidePhase = .peek
+                peekTime = 0
+            }
+        case .peek:
+            // Stop with just his head poking out past the window edge.
+            let peekX = hideFromLeft ? f.minX + 28 : f.maxX - 28
+            if walk(toward: peekX, speed: 60, dt: fdt) {
+                facing = hideFromLeft ? -1 : 1
+                peekTime += dt
+                if peekTime > 1.6 {
+                    set(.airborne)                     // also brings him back in front
+                    jump(450, vx: facing * 160)
+                    say("Peekaboo!", duration: 1.8)
+                }
+            }
+        }
+    }
+
+    // MARK: Desktop folders
+
+    func refreshFolders() {
+        FinderBridge.desktopFolders { [weak self] found in self?.folders = found }
+    }
+
+    private func enterFolder(_ f: DesktopFolder) {
+        targetFolder = nil
+        currentFolder = f
+        folderFrom = pos
+        folderFinding = nil
+        saidRustle = false
+        onGround = false
+        vel = .zero
+        spinSpeed = 0
+        set(.folder, duration: .random(in: 6...11))
+        say("Wheee—", duration: 1)
+        FinderBridge.contents(ofDesktopFolder: f.name) { [weak self] items in
+            guard let self, let items else { return }
+            self.folderFinding = Lines.folderFinding(folder: f.name, items: items)
+        }
+    }
+
+    private func exitFolder() {
+        currentFolder = nil
+        set(.airborne)
+        onGround = false
+        wasThrown = false
+        bounces = 0
+        vel = CGVector(dx: facing * 160, dy: 750)
+        say(folderFinding ?? "It's dark in there!")
+    }
+
     func poke() {
         guard activity != .held else { return }
         if activity == .sleep {
@@ -255,7 +538,9 @@ final class Pet {
         onGround = false
         vel = .zero
         spinSpeed = 0
+        targetFolder = nil
         if speech == nil || Bool.random() { say(Lines.held.pick, duration: 2.2) }
+        refreshFolders()   // icons may have moved since last time
     }
 
     func release(velocity v: CGVector) {
@@ -270,6 +555,21 @@ final class Pet {
         bounces = 0
         spinSpeed = wasThrown ? -vel.dx / 150 * facing : 0   // tumble in the direction of travel
         heldSwingTarget = 0
+
+        // Dropped (not thrown) on, just under, or above a desktop folder? He falls into it.
+        targetFolder = nil
+        if speed < 700 {
+            let near = folders.filter {
+                abs(pos.x - $0.point.x) < 48 && pos.y - $0.point.y > -75 && pos.y - $0.point.y < 400
+            }
+            if let f = near.min(by: { abs(pos.x - $0.point.x) < abs(pos.x - $1.point.x) }) {
+                targetFolder = f
+                vel = CGVector(dx: 0, dy: min(vel.dy, 0))
+                pos.x = f.point.x
+                wasThrown = false
+                spinSpeed = 0
+            }
+        }
     }
 
     private func land(impact: CGFloat) {
@@ -315,6 +615,7 @@ final class Pet {
             (6,  { self.backflip() }),
             (5,  { self.hop() }),
             (6,  { self.chase() }),
+            (8,  { if !self.tryHide() { self.set(.idle, duration: 2) } }),
         ]
         var r = Double.random(in: 0..<options.reduce(0) { $0 + $1.0 })
         for (weight, action) in options {
@@ -370,12 +671,36 @@ final class Pet {
         }
 
         // Random chatter
-        if chatterEnabled && speech == nil && activity != .sleep && activity != .held {
+        if chatterEnabled && speech == nil && ![Activity.sleep, .held, .folder, .hide].contains(activity) {
             nextChatter -= dt
             if nextChatter <= 0 { say(Lines.randomChatter()) }
         }
 
         squash += (1 - squash) * min(1, fdt * 10)
+        stepping = false
+
+        // Inside a desktop folder: shrink into the icon, rummage around, pop back out
+        if activity == .folder, let f = currentFolder {
+            let target = CGPoint(x: f.point.x, y: f.point.y - 30)   // body centre on the icon
+            if activityTime < 0.45 {
+                let k = CGFloat(activityTime / 0.45)
+                pos = CGPoint(x: folderFrom.x + (target.x - folderFrom.x) * k * k,
+                              y: folderFrom.y + (target.y - folderFrom.y) * k * k)
+                shrink = 1 - k
+                spin += fdt * 14
+            } else {
+                pos = target
+                shrink = 0
+                spin = 0
+                if !saidRustle && activityTime > 2.5 {
+                    saidRustle = true
+                    say(Lines.rustle.pick, duration: 2.2)
+                }
+                if activityTime > activityDuration { exitFolder() }
+            }
+            return
+        }
+        if shrink < 1 { shrink = min(1, shrink + fdt * 3.5) }
 
         // Being carried: dangle and flail
         if activity == .held {
@@ -390,9 +715,14 @@ final class Pet {
             pos.x += vel.dx * fdt
             pos.y += vel.dy * fdt
             spin += spinSpeed * fdt
+            if let f = targetFolder {
+                if pos.y <= f.point.y + 20 { enterFolder(f); return }
+                vel.dx = 0
+                pos.x = f.point.x
+            }
             if pos.x < minX { pos.x = minX; bonk(); vel.dx = abs(vel.dx) * 0.5; spinSpeed *= -0.6 }
             if pos.x > maxX { pos.x = maxX; bonk(); vel.dx = -abs(vel.dx) * 0.5; spinSpeed *= -0.6 }
-            if pos.y > a.maxY - 110 { pos.y = a.maxY - 110; vel.dy = -abs(vel.dy) * 0.3 }
+            if targetFolder == nil && pos.y > a.maxY - 110 { pos.y = a.maxY - 110; vel.dy = -abs(vel.dy) * 0.3 }
             if pos.y <= ground {
                 pos.y = ground
                 let impact = -vel.dy
@@ -444,6 +774,7 @@ final class Pet {
             facing = dir
             pos.x += dir * speed * fdt
             walkPhase += fdt * (activity == .run ? 18 : 10)
+            stepping = true
             if abs(targetX - pos.x) < speed * fdt + 1 || pos.x <= minX || pos.x >= maxX || activityTime > activityDuration {
                 set(.idle, duration: .random(in: 1...3))
             }
@@ -454,6 +785,7 @@ final class Pet {
             if abs(mouse.x - pos.x) > 70 {
                 pos.x += dir * 300 * fdt
                 walkPhase += fdt * 20
+                stepping = true
             } else {
                 set(.stare, duration: 2.5)
                 say(Lines.caught.pick, duration: 2)
@@ -482,7 +814,10 @@ final class Pet {
         case .boop, .dizzy:
             if activityTime > activityDuration { set(.idle, duration: 1.5) }
 
-        case .airborne, .held:
+        case .hide:
+            updateHide(dt: dt)
+
+        case .airborne, .held, .folder:
             set(.idle, duration: 1)
         }
     }
@@ -570,22 +905,25 @@ final class PetView: NSView {
         let p = pet
         let cx = bounds.midX
 
-        // Ground shadow (shrinks as he goes up)
-        let height = max(0, p.pos.y - p.area.minY)
-        let s = max(0.3, 1 - height / 400)
-        ctx.setFillColor(NSColor.black.withAlphaComponent(0.16 * s).cgColor)
-        ctx.fillEllipse(in: CGRect(x: cx - 46 * s, y: kFootY - height - 5, width: 92 * s, height: 10))
+        if p.shrink > 0.01 {
+            // Ground shadow (shrinks as he goes up)
+            let height = max(0, p.pos.y - p.area.minY)
+            let s = max(0.3, 1 - height / 400)
+            ctx.setFillColor(NSColor.black.withAlphaComponent(0.16 * s * p.shrink).cgColor)
+            ctx.fillEllipse(in: CGRect(x: cx - 46 * s, y: kFootY - height - 5, width: 92 * s, height: 10))
 
-        // The platypus itself
-        ctx.saveGState()
-        ctx.translateBy(x: cx, y: kFootY)
-        ctx.scaleBy(x: p.facing, y: 1)
-        ctx.translateBy(x: 0, y: 30)
-        ctx.rotate(by: p.spin)
-        ctx.translateBy(x: 0, y: -30)
-        ctx.scaleBy(x: 1 + (1 - p.squash) * 0.7, y: p.squash)
-        drawPlatypus(ctx)
-        ctx.restoreGState()
+            // The platypus itself
+            ctx.saveGState()
+            ctx.translateBy(x: cx, y: kFootY)
+            ctx.scaleBy(x: p.facing, y: 1)
+            ctx.translateBy(x: 0, y: 30)
+            ctx.rotate(by: p.spin)
+            ctx.scaleBy(x: p.shrink, y: p.shrink)
+            ctx.translateBy(x: 0, y: -30)
+            ctx.scaleBy(x: 1 + (1 - p.squash) * 0.7, y: p.squash)
+            drawPlatypus(ctx)
+            ctx.restoreGState()
+        }
 
         drawEffects(ctx, cx: cx)
         drawBubble(ctx, cx: cx)
@@ -595,7 +933,7 @@ final class PetView: NSView {
     private func drawPlatypus(_ ctx: CGContext) {
         let p = pet
         let t = CGFloat(p.time)
-        let moving = [Activity.walk, .run, .chase].contains(p.activity)
+        let moving = p.stepping
         let sleeping = p.activity == .sleep
         let held = p.activity == .held
         let airborne = !p.onGround && !held
@@ -859,6 +1197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
     private var lastTick = CACurrentMediaTime()
+    private var appliedHide: Int?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Drop in from the top of the screen
@@ -894,6 +1233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         statusItem.menu = buildMenu()
+        pet.refreshFolders()   // first run: macOS asks permission for Platypal to control Finder
 
         let t = Timer(timeInterval: 1.0 / 60.0, target: self, selector: #selector(tick), userInfo: nil, repeats: true)
         RunLoop.main.add(t, forMode: .common)
@@ -909,11 +1249,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pet.update(dt: dt, mouse: mouse)
         positionWindow()
 
+        // Hiding: drop to the normal window layer, tucked just below the chosen window.
+        if pet.hideBehind != appliedHide {
+            appliedHide = pet.hideBehind
+            if let number = appliedHide {
+                panel.level = .normal
+                panel.order(.below, relativeTo: number)
+            } else {
+                panel.level = .floating
+                panel.orderFrontRegardless()
+            }
+        }
+
         // The window is click-through everywhere except right over the platypus.
         let f = panel.frame
         let local = CGPoint(x: mouse.x - f.minX, y: mouse.y - f.minY)
         let hitBox = CGRect(x: f.width / 2 - 90, y: kFootY - 6, width: 180, height: 78)
-        panel.ignoresMouseEvents = !(hitBox.contains(local) || view.mouseIsDown)
+        panel.ignoresMouseEvents = !((hitBox.contains(local) && pet.shrink > 0.5) || view.mouseIsDown)
 
         view.needsDisplay = true
     }
@@ -936,6 +1288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add("Backflip!", #selector(menuFlip))
         add("Dance", #selector(menuDance))
         add("Take a Nap", #selector(menuNap))
+        add("Hide!", #selector(menuHide))
         menu.addItem(.separator())
         let chatty = NSMenuItem(title: "Chatty", action: #selector(menuToggleChatter), keyEquivalent: "")
         chatty.target = self
@@ -951,6 +1304,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func menuFlip()  { pet.backflip() }
     @objc private func menuDance() { pet.dance() }
     @objc private func menuNap()   { pet.nap() }
+    @objc private func menuHide() {
+        if !pet.tryHide() && pet.canAct { pet.say("Nowhere to hide! Open a window near the Dock.", duration: 2.5) }
+    }
     @objc private func menuToggleChatter() {
         pet.chatterEnabled.toggle()
         pet.say(pet.chatterEnabled ? "Yay, talking!" : "Okay, I'll be quiet. Mostly.", duration: 2.2)

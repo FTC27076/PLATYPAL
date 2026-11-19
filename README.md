@@ -22,12 +22,22 @@ from the paw icon in the menu bar, or right-click him.
 | Double-click | Backflip |
 | Drag | Dangles and flails. Let go mid-swing to **throw** him: he tumbles, bounces off walls, and gets dizzy if he lands hard |
 | Rest the cursor near his face | He boops it |
+| Drop him on (or just under/above) a desktop folder icon | He shrinks and falls into it, rummages around, then pops out and tells you something he found inside |
 | Leave the Mac alone for 3 minutes | Falls asleep, then greets you when you come back |
-| Right-click / menu bar paw | Say Something, Come Here, Backflip, Dance, Nap, Chatty on/off, Quit |
+| Right-click / menu bar paw | Say Something, Come Here, Backflip, Dance, Nap, Hide!, Chatty on/off, Quit |
 
 On his own he picks from walking, running, idling, staring at your cursor, chasing it, hopping,
-dancing, backflips, and naps (more naps after 11pm). He makes a remark every 35–90 seconds;
+dancing, backflips, naps (more naps after 11pm), and **hiding behind windows**: he walks to the edge of an app window that reaches down to the Dock, tiptoes behind it, peeks his head out, then jumps out with "Peekaboo!". He makes a remark every 35–90 seconds;
 some lines depend on the time of day.
+
+## Permissions
+
+The folder trick asks Finder where your desktop icons are, so the first launch shows
+**"Platypal wants access to control Finder"**. Click OK. If you decline, everything else still
+works; you can turn it back on later in System Settings → Privacy & Security → Automation.
+Because `build.sh` signs the app ad hoc, macOS may ask again after each rebuild.
+
+Hiding only reads where windows are, never their titles or contents, so it needs no permission.
 
 ## Tweaking
 
@@ -35,6 +45,7 @@ Everything is in `Platypal.swift`:
 - `Palette` holds the colors
 - `Lines` holds everything he says
 - `chooseNext()` sets how often he does each behavior
+- `kIconOffset` nudges where he thinks folder icons are, if he lands beside them instead of in them
 - `kAwayTime`, `kGravity` and the other constants at the top control timing and physics
 
 To start him at login, add `Platypal.app` under System Settings → General → Login Items.
