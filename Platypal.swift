@@ -155,7 +155,7 @@ struct DesktopFolder {
 }
 
 /// If he lands a bit off from the icons on your Mac, nudge this (Cocoa points; +y is up).
-let kIconOffset = CGVector(dx: 0, dy: 0)
+let kIconOffset = CGVector(dx: 10, dy: 10)
 let kDropHalfWidth: CGFloat = 56   // how far left/right of the icon centre still counts
 let kMaxDropSpeed: CGFloat = 1200  // faster than this is a throw, not a drop
 
