@@ -164,6 +164,8 @@ enum FinderBridge {
     /// "Platypal wants to control Finder". If you say no, the folder trick just won't happen.
     /// The last error osascript reported (nil if the last run succeeded). Shown in debug mode.
     @MainActor static var lastError: String?
+    /// Finder's raw answer to the last folder query, for debugging.
+    @MainActor static var lastFolderReply: String?
 
     static func run(_ script: String, completion: @escaping @Sendable @MainActor (String?) -> Void) {
         DispatchQueue.global(qos: .utility).async {
@@ -210,12 +212,23 @@ enum FinderBridge {
         end tell
         """
         run(script) { text in
+            lastFolderReply = text
             let mainH = NSScreen.screens.first?.frame.height ?? 0
-            let folders: [DesktopFolder] = (text ?? "").split(separator: "\n").compactMap { line in
-                let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
-                guard parts.count == 3, let x = Double(parts[1]), let y = Double(parts[2]) else { return nil }
+            // Be forgiving about line endings (LF, CR or CRLF) and stray spaces around numbers.
+            let lines = (text ?? "").components(separatedBy: .newlines)
+            // Some locales write numbers like "123,0"
+            func number(_ s: String) -> Double? {
+                Double(s.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: "."))
+            }
+            let folders: [DesktopFolder] = lines.compactMap { line in
+                let parts = line.components(separatedBy: "\t")
+                guard parts.count >= 3,
+                      let x = number(parts[parts.count - 2]),
+                      let y = number(parts[parts.count - 1])
+                else { return nil }
+                let name = parts.dropLast(2).joined(separator: "\t")
                 // Finder uses top-left-origin coordinates; flip to Cocoa's bottom-left origin.
-                return DesktopFolder(name: String(parts[0]),
+                return DesktopFolder(name: name,
                                      point: CGPoint(x: x + kIconOffset.dx, y: mainH - y + kIconOffset.dy))
             }
             completion(folders)
@@ -614,7 +627,7 @@ final class Pet {
                 }
                 return "Debug: Finder error: \(e.prefix(120))"
             }
-            return "Debug: Finder says there are no folders on the desktop."
+            return emptyReason()
         }
         if speed >= kMaxDropSpeed { return "Debug: let go too fast (\(Int(speed)) pt/s). Hold still, then let go." }
         let nearest = folders.min { hypot(pos.x - $0.point.x, pos.y - $0.point.y) < hypot(pos.x - $1.point.x, pos.y - $1.point.y) }!
@@ -622,13 +635,22 @@ final class Pet {
         return "Debug: missed. Nearest is \"\(nearest.name)\": \(abs(dx)) pt \(dx >= 0 ? "right" : "left"), \(abs(dy)) pt \(dy >= 0 ? "above" : "below") my feet."
     }
 
+    /// Finder answered without an error but we got no folders. Was the answer empty, or unreadable?
+    private func emptyReason() -> String {
+        let raw = (FinderBridge.lastFolderReply ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if FinderBridge.lastFolderReply == nil { return "Debug: Finder hasn't answered yet. Try again in a second." }
+        if raw.isEmpty { return "Debug: Finder says there are 0 folders on the desktop. (Stacks on? Folders in a subfolder?)" }
+        let shown = raw.prefix(100).replacingOccurrences(of: "\t", with: " ⇥ ")
+        return "Debug: Finder replied, but I couldn't read it: \(shown)"
+    }
+
     func folderStatus() -> String {
         if let e = FinderBridge.lastError, folders.isEmpty {
             return e.contains("-1743") ? "Debug: Finder permission is blocked (-1743). See README → Debugging."
                                        : "Debug: Finder error: \(e.prefix(120))"
         }
-        return folders.isEmpty ? "Debug: I don't see any desktop folders."
-                               : "Debug: I see \(folders.count) folder\(folders.count == 1 ? "" : "s"). Red boxes = drop zones."
+        if folders.isEmpty { return emptyReason() }
+        return "Debug: I see \(folders.count) folder\(folders.count == 1 ? "" : "s"). Red boxes = drop zones."
     }
 
     private func land(impact: CGFloat) {
@@ -1285,6 +1307,10 @@ final class FolderDebugView: NSView {
         var info = "feet (\(Int(pet.pos.x)), \(Int(pet.pos.y)))   cursor (\(Int(mouse.x)), \(Int(mouse.y)))   "
         info += "folders: \(pet.knownFolders.count)   last drop speed: \(Int(pet.lastDropSpeed)) (max \(Int(kMaxDropSpeed)))"
         if let e = FinderBridge.lastError { info += "\nFinder error: \(e)" }
+        if pet.knownFolders.isEmpty, let raw = FinderBridge.lastFolderReply {
+            let shown = raw.prefix(300).replacingOccurrences(of: "\t", with: " ⇥ ").replacingOccurrences(of: "\r", with: "␍")
+            info += "\nFinder's raw reply (\(raw.count) chars): " + (shown.isEmpty ? "(empty)" : shown)
+        }
         NSAttributedString(string: info, attributes: label).draw(at: CGPoint(x: feet.x + 10, y: feet.y - 30))
     }
 }
