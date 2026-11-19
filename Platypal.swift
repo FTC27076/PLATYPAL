@@ -75,6 +75,20 @@ enum Lines {
     static let chase   = ["Ooh, what's that?", "Gonna get that cursor!", "Come back here!"]
     static let caught  = ["Got it! ...now what?", "Hello, little arrow.", "Found you."]
     static let welcomeBack = ["Oh! You're back!", "Welcome back!", "Missed you. Kinda."]
+    static let kick    = ["GOOOAL!", "Hyah!", "Bend it like a platypus!", "Kick!", "And he shoots..."]
+    static let header  = ["Header!", "Ow, my head. Worth it.", "Bonk!"]
+    static let ballHit = ["Oof!", "Hey!", "Watch it!"]
+    static let boing   = ["Boing!", "Wheee!", "Higher!", "Boing boing!", "Look, I'm flying!"]
+    static let newToy  = ["Ooh, a toy!", "For me?!", "Best day ever!"]
+    static let agent   = [
+        "Agent Platypal, reporting for duty.",
+        "*whispers* The cursor is a suspect.",
+        "Mission status: snacks not yet located.",
+        "I've seen things. Mostly spreadsheets.",
+        "This message will self-destruct. Kidding. I'm a platypus.",
+        "Code name: Turquoise Shadow.",
+        "*taps earpiece* Copy that, HQ.",
+    ]
     static let rustle  = ["*rustle rustle*", "*muffled* ...so many files...", "*thump* Ow.", "*echo* Hellooo?"]
 
     static func folderFinding(folder: String, items: [String]) -> String {
@@ -99,7 +113,8 @@ enum Lines {
         }
     }
 
-    static func randomChatter() -> String {
+    static func randomChatter(agent: Bool = false) -> String {
+        if agent && Bool.random() { return Lines.agent.pick }
         let hour = Calendar.current.component(.hour, from: Date())
         if Double.random(in: 0..<1) < 0.2 {
             switch hour {
@@ -260,10 +275,34 @@ enum FinderBridge {
 // MARK: - The platypus (state + behaviour)
 
 enum Activity: Equatable {
-    case idle, walk, run, chase, stare, sleep, dance, boop, dizzy, held, airborne, hide, folder
+    case idle, walk, run, chase, stare, sleep, dance, boop, dizzy, held, airborne, hide, folder, fetch, trampoline
 }
 
 enum HidePhase { case approach, sneak, hidden, peek }
+
+enum Hat: String, CaseIterable {
+    case none, party, top, crown, propeller, beanie
+    var title: String {
+        switch self {
+        case .none: return "No Hat"
+        case .party: return "Party Hat"
+        case .top: return "Top Hat"
+        case .crown: return "Crown"
+        case .propeller: return "Propeller Cap"
+        case .beanie: return "Beanie"
+        }
+    }
+    var reaction: String {
+        switch self {
+        case .none: return "Hat-free and fancy-free."
+        case .party: return "It's a party! Who's invited? Me."
+        case .top: return "Most distinguished. Indubitably."
+        case .crown: return "Bow before King Platypal!"
+        case .propeller: return "If I spin fast enough, can I fly?"
+        case .beanie: return "Cozy."
+        }
+    }
+}
 
 enum EyeStyle { case open, closed, happy, dizzy, wide }
 
@@ -319,6 +358,17 @@ final class Pet {
     var nextChatter: Double = 30
     var chatterEnabled = true
 
+    // Dress-up and toys
+    var hat: Hat = .none
+    var agent = false
+    weak var ball: Prop?
+    weak var trampoline: Prop?
+    private var kicksLeft = 0
+    private var trampBounces = 0
+    private var trampTarget = 0
+    private var trampJumping = false
+    private var ballHitCooldown: Double = 0
+
     // Bookkeeping
     private var wasThrown = false
     private var willBeDizzy = false
@@ -341,6 +391,7 @@ final class Pet {
         case .sleep: return .closed
         case .dizzy: return .dizzy
         case .held, .chase, .folder: return .wide
+        case .trampoline where !onGround, .fetch where happyTime > 0: return .happy
         case .dance, .boop: return .happy
         case .hide where hidePhase == .sneak: return .happy
         default:
@@ -417,7 +468,102 @@ final class Pet {
         say("Coming!", duration: 1.5)
     }
 
-    func saySomething() { say(Lines.randomChatter()) }
+    func saySomething() { say(Lines.randomChatter(agent: agent)) }
+
+    // MARK: Toys
+
+    func playBall() {
+        guard canAct, let b = ball, !b.held else { return }
+        kicksLeft = Int.random(in: 2...4)
+        set(.fetch, duration: 15)
+    }
+
+    func playTrampoline() {
+        guard canAct, let t = trampoline, !t.held, t.onGround else { return }
+        trampJumping = false
+        set(.trampoline, duration: 20)
+    }
+
+    func gotHitByBall(speed: CGFloat, fromAbove: Bool) {
+        guard ballHitCooldown <= 0, speed > 250 else { return }
+        ballHitCooldown = 1.5
+        squash = 0.8
+        if fromAbove { if Bool.random() { say(Lines.header.pick, duration: 1.5) } }
+        else if speed > 700 { say(Lines.ballHit.pick, duration: 1.2) }
+    }
+
+    /// Feet just crossed the trampoline mat on the way down.
+    private func bounceOnTrampoline(_ t: Prop) {
+        let impact = -vel.dy
+        pos.y = t.matY
+        t.dip = min(1, 0.4 + impact / 2000)
+        squash = 0.7
+        spin = 0
+        willBeDizzy = false
+        bounces = 0
+        if activity == .trampoline && trampBounces < trampTarget {
+            trampBounces += 1
+            let vy = CGFloat.random(in: 950...1250)
+            vel = CGVector(dx: (t.pos.x - pos.x) * 2, dy: vy)          // drift back to the middle
+            let flip = trampBounces > 1 && Double.random(in: 0..<1) < 0.45
+            spinSpeed = flip ? 2 * .pi / (2 * vy / kGravity) * (Bool.random() ? 1 : -1) : 0
+            if Double.random(in: 0..<1) < 0.35 { say(Lines.boing.pick, duration: 1.2) }
+        } else if impact > 450 && activity != .trampoline {
+            vel.dy = min(1500, impact * 0.8)                           // thrown onto it: boing!
+            vel.dx *= 0.8
+            spinSpeed *= 0.5
+            if Bool.random() { say(Lines.boing.pick, duration: 1.2) }
+        } else {
+            let dir: CGFloat = pos.x < t.pos.x ? -1 : 1                // hop off the side
+            facing = dir
+            vel = CGVector(dx: dir * 230, dy: 520)
+            spinSpeed = 0
+            if activity == .trampoline { set(.airborne) }
+        }
+    }
+
+    private func updateFetch(dt: Double) {
+        let fdt = CGFloat(dt)
+        guard let b = ball else { set(.idle); return }
+        let a = area
+        if b.held || b.pos.y - kBallRadius > a.minY + 60 {
+            facing = b.pos.x > pos.x ? 1 : -1                         // watch it fly
+        } else {
+            let dir: CGFloat = b.pos.x > pos.x ? 1 : -1
+            let standX = b.pos.x - dir * 40
+            let close = abs(b.pos.x - pos.x) < 62 && b.pos.y - kBallRadius < a.minY + 20
+            if close {
+                facing = dir
+                var kickDir = dir
+                if b.pos.x < a.minX + 150 { kickDir = 1 }                // don't kick it into the wall
+                if b.pos.x > a.maxX - 150 { kickDir = -1 }
+                b.vel = CGVector(dx: kickDir * .random(in: 450...1000), dy: .random(in: 250...750))
+                b.dip = 0
+                squash = 0.75
+                happyTime = 0.8
+                ballHitCooldown = 0.6
+                kicksLeft -= 1
+                if Double.random(in: 0..<1) < 0.5 { say(Lines.kick.pick, duration: 1.4) }
+                if kicksLeft <= 0 { set(.idle, duration: 1.5); return }
+            } else {
+                _ = walk(toward: standX, speed: 230, dt: fdt)
+            }
+        }
+        if activityTime > activityDuration { set(.idle, duration: 1.5) }
+    }
+
+    private func updateTrampolineApproach(dt: Double) {
+        guard let t = trampoline, !t.held, t.onGround else { set(.idle); return }
+        if trampJumping { set(.idle); return }        // landed on the floor instead: missed
+        if walk(toward: t.pos.x, speed: 150, dt: CGFloat(dt)) {
+            trampJumping = true
+            trampBounces = 0
+            trampTarget = .random(in: 4...8)
+            jump(700)
+            say("Here I go!", duration: 1.2)
+        }
+        if activityTime > activityDuration { set(.idle) }
+    }
 
     // MARK: Hiding behind windows
 
@@ -702,6 +848,8 @@ final class Pet {
             (5,  { self.hop() }),
             (6,  { self.chase() }),
             (8,  { if !self.tryHide() { self.set(.idle, duration: 2) } }),
+            (ball == nil ? 0 : 16, { self.playBall() }),
+            (trampoline == nil ? 0 : 14, { self.playTrampoline() }),
         ]
         var r = Double.random(in: 0..<options.reduce(0) { $0 + $1.0 })
         for (weight, action) in options {
@@ -717,6 +865,7 @@ final class Pet {
         time += dt
         activityTime += dt
         happyTime -= dt
+        ballHitCooldown -= dt
 
         let a = area
         let minX = a.minX + kEdge, maxX = a.maxX - kEdge, ground = a.minY
@@ -759,7 +908,7 @@ final class Pet {
         // Random chatter
         if chatterEnabled && speech == nil && ![Activity.sleep, .held, .folder, .hide].contains(activity) {
             nextChatter -= dt
-            if nextChatter <= 0 { say(Lines.randomChatter()) }
+            if nextChatter <= 0 { say(Lines.randomChatter(agent: agent)) }
         }
 
         squash += (1 - squash) * min(1, fdt * 10)
@@ -797,10 +946,15 @@ final class Pet {
 
         // In the air: ballistic physics with wall/floor bounces
         if !onGround {
+            let prevY = pos.y
             vel.dy -= kGravity * fdt
             pos.x += vel.dx * fdt
             pos.y += vel.dy * fdt
             spin += spinSpeed * fdt
+            if targetFolder == nil, let t = trampoline, !t.held, vel.dy < 0,
+               abs(pos.x - t.pos.x) < kMatHalfWidth + 8, prevY >= t.matY, pos.y < t.matY {
+                bounceOnTrampoline(t)
+            }
             if let f = targetFolder {
                 if pos.y <= f.point.y + 20 { enterFolder(f); return }
                 vel.dx = 0
@@ -902,6 +1056,12 @@ final class Pet {
 
         case .hide:
             updateHide(dt: dt)
+
+        case .fetch:
+            updateFetch(dt: dt)
+
+        case .trampoline:
+            updateTrampolineApproach(dt: dt)
 
         case .airborne, .held, .folder:
             set(.idle, duration: 1)
@@ -1140,6 +1300,9 @@ final class PetView: NSView {
         // --- Eye ---
         let e = CGPoint(x: 41, y: 47 + bob)
         ctx.setLineCap(.round)
+        if p.agent {
+            drawAgentGear(ctx, eye: e, bob: bob)
+        } else {
         switch p.eyes {
         case .open, .wide:
             let r: CGFloat = p.eyes == .wide ? 6.8 : 5.8
@@ -1166,6 +1329,104 @@ final class PetView: NSView {
             ctx.move(to: CGPoint(x: e.x - 4, y: e.y + 4)); ctx.addLine(to: CGPoint(x: e.x + 4, y: e.y - 4))
             ctx.setStrokeColor(Palette.outline.cgColor); ctx.setLineWidth(2.2); ctx.strokePath()
         }
+        }
+
+        drawHat(ctx, bob: bob, t: t)
+    }
+
+    /// Secret agent: wraparound shades and a curly earpiece wire.
+    private func drawAgentGear(_ ctx: CGContext, eye e: CGPoint, bob: CGFloat) {
+        // Earpiece wire curling down the back of his head
+        ctx.setStrokeColor(NSColor(white: 0.15, alpha: 1).cgColor)
+        ctx.setLineWidth(1.4)
+        ctx.move(to: CGPoint(x: 26, y: 44 + bob))
+        for i in 0..<6 {
+            let y = 44 + bob - CGFloat(i + 1) * 3.5
+            ctx.addQuadCurve(to: CGPoint(x: 26, y: y), control: CGPoint(x: i % 2 == 0 ? 21 : 31, y: y + 1.75))
+        }
+        ctx.strokePath()
+        ctx.setFillColor(NSColor(white: 0.15, alpha: 1).cgColor)
+        ctx.fillEllipse(in: CGRect(x: 23, y: 42 + bob, width: 6, height: 6))
+        // Strap
+        ctx.setStrokeColor(NSColor(white: 0.1, alpha: 1).cgColor); ctx.setLineWidth(2.5)
+        ctx.move(to: CGPoint(x: e.x - 8, y: e.y + 1)); ctx.addLine(to: CGPoint(x: 22, y: e.y + 3)); ctx.strokePath()
+        // Lens
+        let lens = CGPath(roundedRect: CGRect(x: e.x - 9, y: e.y - 5.5, width: 19, height: 11), cornerWidth: 5, cornerHeight: 5, transform: nil)
+        ctx.addPath(lens); ctx.setFillColor(NSColor(white: 0.08, alpha: 1).cgColor); ctx.fillPath()
+        ctx.addPath(lens); ctx.setStrokeColor(NSColor.black.cgColor); ctx.setLineWidth(1.2); ctx.strokePath()
+        ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.6).cgColor); ctx.setLineWidth(1.6)
+        ctx.move(to: CGPoint(x: e.x - 5, y: e.y + 2.5)); ctx.addLine(to: CGPoint(x: e.x - 1, y: e.y - 2)); ctx.strokePath()
+    }
+
+    /// Hats sit on top of his head (head centre is around (38, 40), top around y = 59).
+    private func drawHat(_ ctx: CGContext, bob: CGFloat, t: CGFloat) {
+        let hat = pet.hat
+        guard hat != .none else { return }
+        ctx.saveGState()
+        ctx.translateBy(x: 36, y: 55 + bob)
+        ctx.rotate(by: -0.12)
+        let ink = Palette.outline.cgColor
+        func outlined(_ path: CGPath, _ fill: NSColor, width: CGFloat = 2) {
+            ctx.addPath(path); ctx.setFillColor(fill.cgColor); ctx.fillPath()
+            ctx.addPath(path); ctx.setStrokeColor(ink); ctx.setLineWidth(width); ctx.strokePath()
+        }
+        switch hat {
+        case .none:
+            break
+        case .party:
+            let cone = CGMutablePath()
+            cone.move(to: CGPoint(x: -11, y: 0)); cone.addLine(to: CGPoint(x: 11, y: 0)); cone.addLine(to: CGPoint(x: 1, y: 28))
+            cone.closeSubpath()
+            outlined(cone, NSColor(srgbRed: 1, green: 0.42, blue: 0.62, alpha: 1))
+            ctx.saveGState()
+            ctx.addPath(cone); ctx.clip()
+            ctx.setStrokeColor(NSColor(srgbRed: 1, green: 0.85, blue: 0.3, alpha: 1).cgColor); ctx.setLineWidth(3)
+            for y in stride(from: CGFloat(4), to: 28, by: 8) {
+                ctx.move(to: CGPoint(x: -14, y: y - 4)); ctx.addLine(to: CGPoint(x: 14, y: y + 4))
+            }
+            ctx.strokePath()
+            ctx.restoreGState()
+            outlined(CGPath(ellipseIn: CGRect(x: -3, y: 25, width: 8, height: 8), transform: nil), NSColor(srgbRed: 1, green: 0.85, blue: 0.3, alpha: 1), width: 1.5)
+        case .top:
+            outlined(CGPath(roundedRect: CGRect(x: -18, y: -1, width: 36, height: 6), cornerWidth: 3, cornerHeight: 3, transform: nil), NSColor(white: 0.12, alpha: 1))
+            outlined(CGPath(roundedRect: CGRect(x: -11, y: 3, width: 22, height: 24), cornerWidth: 2, cornerHeight: 2, transform: nil), NSColor(white: 0.12, alpha: 1))
+            ctx.setFillColor(NSColor(srgbRed: 0.85, green: 0.2, blue: 0.3, alpha: 1).cgColor)
+            ctx.fill(CGRect(x: -10, y: 6, width: 20, height: 4))
+        case .crown:
+            let crown = CGMutablePath()
+            crown.move(to: CGPoint(x: -13, y: 0)); crown.addLine(to: CGPoint(x: 13, y: 0))
+            crown.addLine(to: CGPoint(x: 14, y: 16)); crown.addLine(to: CGPoint(x: 7, y: 8))
+            crown.addLine(to: CGPoint(x: 0, y: 19)); crown.addLine(to: CGPoint(x: -7, y: 8))
+            crown.addLine(to: CGPoint(x: -14, y: 16)); crown.closeSubpath()
+            outlined(crown, Palette.star)
+            for x in [-7, 0, 7] as [CGFloat] {
+                ctx.setFillColor(NSColor(srgbRed: 0.9, green: 0.2, blue: 0.35, alpha: 1).cgColor)
+                ctx.fillEllipse(in: CGRect(x: x - 2, y: 2.5, width: 4, height: 4))
+            }
+        case .propeller:
+            let dome = CGMutablePath()
+            dome.addArc(center: .zero, radius: 13, startAngle: 0, endAngle: .pi, clockwise: false)
+            dome.closeSubpath()
+            outlined(dome, NSColor(srgbRed: 0.98, green: 0.78, blue: 0.2, alpha: 1))
+            ctx.saveGState()
+            ctx.addPath(dome); ctx.clip()
+            ctx.setFillColor(NSColor(srgbRed: 0.9, green: 0.25, blue: 0.3, alpha: 1).cgColor)
+            ctx.fill(CGRect(x: -4.5, y: 0, width: 9, height: 14))
+            ctx.restoreGState()
+            ctx.setStrokeColor(ink); ctx.setLineWidth(2)
+            ctx.move(to: CGPoint(x: 0, y: 13)); ctx.addLine(to: CGPoint(x: 0, y: 18)); ctx.strokePath()
+            let spinRate: CGFloat = pet.onGround ? 8 : 30
+            let w = abs(cos(t * spinRate)) * 13 + 2
+            outlined(CGPath(ellipseIn: CGRect(x: -w, y: 16.5, width: w * 2, height: 4), transform: nil), NSColor(srgbRed: 0.25, green: 0.55, blue: 0.95, alpha: 1), width: 1.5)
+        case .beanie:
+            let dome = CGMutablePath()
+            dome.addArc(center: CGPoint(x: 0, y: 2), radius: 13, startAngle: 0, endAngle: .pi, clockwise: false)
+            dome.closeSubpath()
+            outlined(dome, NSColor(srgbRed: 0.95, green: 0.45, blue: 0.2, alpha: 1))
+            outlined(CGPath(roundedRect: CGRect(x: -14, y: -1, width: 28, height: 6), cornerWidth: 3, cornerHeight: 3, transform: nil), NSColor(srgbRed: 0.8, green: 0.3, blue: 0.15, alpha: 1))
+            outlined(CGPath(ellipseIn: CGRect(x: -4, y: 13, width: 8, height: 8), transform: nil), NSColor.white, width: 1.5)
+        }
+        ctx.restoreGState()
     }
 
     /// Zs when sleeping, notes when dancing, stars when dizzy.
@@ -1320,6 +1581,283 @@ final class FolderDebugView: NSView {
     }
 }
 
+// MARK: - Toys (soccer ball, trampoline)
+
+let kMatHeight: CGFloat = 28       // trampoline mat height above the floor
+let kMatHalfWidth: CGFloat = 52
+let kBallRadius: CGFloat = 17
+
+@MainActor
+func usableArea(at p: CGPoint) -> CGRect {
+    let probe = CGPoint(x: p.x, y: p.y + 20)
+    return (NSScreen.screens.first { $0.frame.contains(probe) } ?? NSScreen.main ?? NSScreen.screens[0]).visibleFrame
+}
+
+@MainActor
+final class Prop {
+    enum Kind { case ball, trampoline }
+    let kind: Kind
+    /// Ball: its centre. Trampoline: the middle of its feet on the floor.
+    var pos: CGPoint
+    var vel = CGVector.zero
+    var spin: CGFloat = 0
+    var dip: CGFloat = 0           // trampoline mat sag, 0...1
+    var held = false
+    var onGround = false
+    var panel: PetPanel!
+    var view: PropView!
+
+    init(kind: Kind, at p: CGPoint) {
+        self.kind = kind
+        self.pos = p
+    }
+
+    var winSize: CGSize { kind == .ball ? CGSize(width: 70, height: 70) : CGSize(width: 170, height: 90) }
+    /// Where `pos` sits inside the window.
+    var anchor: CGPoint { kind == .ball ? CGPoint(x: 35, y: 35) : CGPoint(x: 85, y: 12) }
+    var matY: CGFloat { pos.y + kMatHeight }
+
+    func hitTest(screenPoint m: CGPoint) -> Bool {
+        switch kind {
+        case .ball: return hypot(m.x - pos.x, m.y - pos.y) < kBallRadius + 8
+        case .trampoline: return CGRect(x: pos.x - 66, y: pos.y - 2, width: 132, height: kMatHeight + 14).contains(m)
+        }
+    }
+
+    func update(dt: Double, pet: Pet, trampoline: Prop?) {
+        let fdt = CGFloat(dt)
+        dip -= dip * min(1, fdt * 9)
+        guard !held else { return }
+        let a = usableArea(at: pos)
+        let floorY = kind == .ball ? a.minY + kBallRadius : a.minY
+        let r: CGFloat = kind == .ball ? kBallRadius : 66
+
+        let prevY = pos.y
+        vel.dy -= kGravity * fdt
+        pos.x += vel.dx * fdt
+        pos.y += vel.dy * fdt
+
+        if pos.x < a.minX + r { pos.x = a.minX + r; vel.dx = abs(vel.dx) * 0.7 }
+        if pos.x > a.maxX - r { pos.x = a.maxX - r; vel.dx = -abs(vel.dx) * 0.7 }
+        if pos.y > a.maxY - r { pos.y = a.maxY - r; vel.dy = -abs(vel.dy) * 0.5 }
+
+        if kind == .ball {
+            // Bounce on the trampoline
+            if let t = trampoline, !t.held, vel.dy < 0, abs(pos.x - t.pos.x) < kMatHalfWidth,
+               prevY - kBallRadius >= t.matY, pos.y - kBallRadius < t.matY {
+                pos.y = t.matY + kBallRadius
+                vel.dy = max(700, -vel.dy * 0.9)
+                t.dip = min(1, t.dip + 0.5)
+            }
+            collide(with: pet)
+            spin -= vel.dx * fdt / kBallRadius        // roll
+        }
+
+        onGround = false
+        if pos.y <= floorY {
+            pos.y = floorY
+            if kind == .ball && vel.dy < -120 {
+                vel.dy = -vel.dy * 0.62
+            } else {
+                vel.dy = 0
+                onGround = true
+            }
+            vel.dx *= kind == .ball ? max(0, 1 - fdt * 1.2) : 0   // rolling friction
+            if abs(vel.dx) < 4 { vel.dx = 0 }
+        }
+    }
+
+    /// The ball bounces off the platypus (treated as a box around his body).
+    private func collide(with pet: Pet) {
+        guard pet.shrink > 0.9, pet.hideBehind == nil else { return }
+        let box = CGRect(x: pet.pos.x - 46, y: pet.pos.y + 4, width: 92, height: 56)
+        let closest = CGPoint(x: min(max(pos.x, box.minX), box.maxX), y: min(max(pos.y, box.minY), box.maxY))
+        var n = CGVector(dx: pos.x - closest.x, dy: pos.y - closest.y)
+        var d = hypot(n.dx, n.dy)
+        if d >= kBallRadius { return }
+        if d < 0.001 { n = CGVector(dx: 0, dy: 1); d = 1 }   // centre inside him: pop it upward
+        n = CGVector(dx: n.dx / d, dy: n.dy / d)
+        let rel = CGVector(dx: vel.dx - pet.vel.dx, dy: vel.dy - pet.vel.dy)
+        let along = rel.dx * n.dx + rel.dy * n.dy
+        guard along < 0 else { return }                        // already moving away
+        vel.dx -= 1.6 * along * n.dx
+        vel.dy -= 1.6 * along * n.dy
+        pos.x = closest.x + n.dx * kBallRadius
+        pos.y = closest.y + n.dy * kBallRadius
+        pet.gotHitByBall(speed: -along, fromAbove: n.dy > 0.7)
+    }
+}
+
+final class PropView: NSView {
+    let prop: Prop
+    var onRemove: (() -> Void)?
+    private(set) var mouseIsDown = false
+    private var dragging = false
+    private var downAt = CGPoint.zero
+    private var grab = CGVector.zero
+    private var samples: [(p: CGPoint, t: TimeInterval)] = []
+
+    init(prop: Prop) {
+        self.prop = prop
+        super.init(frame: NSRect(origin: .zero, size: prop.winSize))
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+    override var isOpaque: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with e: NSEvent) {
+        if e.modifierFlags.contains(.control) { showMenu(e); return }
+        let m = NSEvent.mouseLocation
+        mouseIsDown = true
+        dragging = false
+        downAt = m
+        grab = CGVector(dx: prop.pos.x - m.x, dy: prop.pos.y - m.y)
+        samples = [(m, e.timestamp)]
+    }
+
+    override func mouseDragged(with e: NSEvent) {
+        guard mouseIsDown else { return }
+        let m = NSEvent.mouseLocation
+        if !dragging && hypot(m.x - downAt.x, m.y - downAt.y) > 4 {
+            dragging = true
+            prop.held = true
+        }
+        guard dragging else { return }
+        prop.pos = CGPoint(x: m.x + grab.dx, y: m.y + grab.dy)
+        samples.append((m, e.timestamp))
+        samples.removeAll { e.timestamp - $0.t > 0.08 }
+    }
+
+    override func mouseUp(with e: NSEvent) {
+        guard mouseIsDown else { return }
+        mouseIsDown = false
+        if dragging {
+            dragging = false
+            prop.held = false
+            prop.vel = .zero
+            if prop.kind == .ball, let a = samples.first, let b = samples.last, b.t - a.t > 0.005, e.timestamp - b.t < 0.1 {
+                let dt = CGFloat(b.t - a.t)
+                prop.vel = CGVector(dx: (b.p.x - a.p.x) / dt, dy: (b.p.y - a.p.y) / dt)
+            }
+        } else if prop.kind == .ball {
+            prop.vel = CGVector(dx: .random(in: -200...200), dy: 700)   // flick it up
+        } else {
+            prop.dip = 1
+        }
+    }
+
+    override func rightMouseDown(with e: NSEvent) { showMenu(e) }
+
+    private func showMenu(_ e: NSEvent) {
+        let menu = NSMenu()
+        let item = NSMenuItem(title: prop.kind == .ball ? "Put Away Ball" : "Put Away Trampoline",
+                              action: #selector(remove), keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+        NSMenu.popUpContextMenu(menu, with: e, for: self)
+    }
+
+    @objc private func remove() { onRemove?() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.clear(bounds)
+        let a = prop.anchor
+        ctx.translateBy(x: a.x, y: a.y)
+        switch prop.kind {
+        case .ball: drawBall(ctx)
+        case .trampoline: drawTrampoline(ctx)
+        }
+    }
+
+    private func drawBall(_ ctx: CGContext) {
+        let r = kBallRadius
+        // Shadow when it's close to the floor
+        let height = prop.pos.y - kBallRadius - usableArea(at: prop.pos).minY
+        if height < 30 {
+            let k = 1 - max(0, height) / 30
+            ctx.setFillColor(NSColor.black.withAlphaComponent(0.18 * k).cgColor)
+            ctx.fillEllipse(in: CGRect(x: -r, y: -r - height - 3, width: r * 2, height: 6))
+        }
+        let disc = CGRect(x: -r, y: -r, width: r * 2, height: r * 2)
+        ctx.setFillColor(Palette.outline.cgColor)
+        ctx.fillEllipse(in: disc.insetBy(dx: -2, dy: -2))
+        ctx.setFillColor(NSColor.white.cgColor)
+        ctx.fillEllipse(in: disc)
+
+        ctx.saveGState()
+        ctx.addEllipse(in: disc); ctx.clip()
+        ctx.rotate(by: prop.spin)
+        func pentagon(center c: CGPoint, radius pr: CGFloat, rotation: CGFloat) {
+            for i in 0..<5 {
+                let ang = rotation + CGFloat(i) * 2 * .pi / 5 + .pi / 2
+                let pt = CGPoint(x: c.x + cos(ang) * pr, y: c.y + sin(ang) * pr)
+                if i == 0 { ctx.move(to: pt) } else { ctx.addLine(to: pt) }
+            }
+            ctx.closePath()
+        }
+        ctx.setFillColor(NSColor(white: 0.12, alpha: 1).cgColor)
+        pentagon(center: .zero, radius: 6.5, rotation: 0)
+        ctx.fillPath()
+        ctx.setStrokeColor(NSColor(white: 0.12, alpha: 1).cgColor)
+        ctx.setLineWidth(1.4)
+        for i in 0..<5 {
+            let ang = CGFloat(i) * 2 * .pi / 5 + .pi / 2
+            ctx.move(to: CGPoint(x: cos(ang) * 6.5, y: sin(ang) * 6.5))
+            ctx.addLine(to: CGPoint(x: cos(ang) * 13, y: sin(ang) * 13))
+        }
+        ctx.strokePath()
+        for i in 0..<5 {
+            let ang = CGFloat(i) * 2 * .pi / 5 + .pi / 2
+            pentagon(center: CGPoint(x: cos(ang) * 18, y: sin(ang) * 18), radius: 5.5, rotation: .pi)
+        }
+        ctx.fillPath()
+        ctx.restoreGState()
+        // Shine
+        ctx.setFillColor(NSColor.white.withAlphaComponent(0.55).cgColor)
+        ctx.fillEllipse(in: CGRect(x: -r * 0.55, y: r * 0.25, width: 7, height: 5))
+    }
+
+    private func drawTrampoline(_ ctx: CGContext) {
+        let blue = NSColor(srgbRed: 0.18, green: 0.42, blue: 0.90, alpha: 1)
+        let legs = NSColor(white: 0.45, alpha: 1)
+        // Floor shadow
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.15).cgColor)
+        ctx.fillEllipse(in: CGRect(x: -68, y: -5, width: 136, height: 9))
+        // Legs
+        ctx.setLineCap(.round)
+        ctx.setStrokeColor(legs.cgColor); ctx.setLineWidth(4)
+        for (top, bottom) in [(-50, -58), (-18, -22), (18, 22), (50, 58)] as [(CGFloat, CGFloat)] {
+            ctx.move(to: CGPoint(x: top, y: kMatHeight - 3)); ctx.addLine(to: CGPoint(x: bottom, y: 0))
+        }
+        ctx.strokePath()
+        // Mat (sags when something lands on it)
+        let sag = prop.dip * 16
+        ctx.setStrokeColor(NSColor(white: 0.1, alpha: 1).cgColor); ctx.setLineWidth(4)
+        ctx.move(to: CGPoint(x: -kMatHalfWidth, y: kMatHeight))
+        ctx.addQuadCurve(to: CGPoint(x: kMatHalfWidth, y: kMatHeight), control: CGPoint(x: 0, y: kMatHeight - sag * 2))
+        ctx.strokePath()
+        // Springs
+        ctx.setStrokeColor(NSColor(white: 0.6, alpha: 1).cgColor); ctx.setLineWidth(1.5)
+        for side in [-1, 1] as [CGFloat] {
+            var x = side * kMatHalfWidth
+            ctx.move(to: CGPoint(x: x, y: kMatHeight))
+            for i in 0..<4 {
+                x += side * 2
+                ctx.addLine(to: CGPoint(x: x, y: kMatHeight + (i % 2 == 0 ? 2.5 : -2.5)))
+            }
+        }
+        ctx.strokePath()
+        // Padded rim at each end
+        let rim = CGPath(roundedRect: CGRect(x: -66, y: kMatHeight - 4, width: 14, height: 8), cornerWidth: 4, cornerHeight: 4, transform: nil)
+        let rim2 = CGPath(roundedRect: CGRect(x: 52, y: kMatHeight - 4, width: 14, height: 8), cornerWidth: 4, cornerHeight: 4, transform: nil)
+        for path in [rim, rim2] {
+            ctx.addPath(path); ctx.setFillColor(blue.cgColor); ctx.fillPath()
+            ctx.addPath(path); ctx.setStrokeColor(Palette.outline.cgColor); ctx.setLineWidth(1.5); ctx.strokePath()
+        }
+    }
+}
+
 // MARK: - Window
 
 final class PetPanel: NSPanel {
@@ -1341,12 +1879,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastTick = CACurrentMediaTime()
     private var appliedHide: Int?
     private var debugPanel: NSPanel?
+    private var props: [Prop] = []
+    private let defaults = UserDefaults.standard
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Drop in from the top of the screen
         let vf = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
         pet.pos = CGPoint(x: .random(in: (vf.minX + 200)...(max(vf.minX + 201, vf.maxX - 200))), y: vf.maxY - 120)
         pet.facing = Bool.random() ? 1 : -1
+        pet.hat = Hat(rawValue: defaults.string(forKey: "hat") ?? "") ?? .none
+        pet.agent = defaults.bool(forKey: "agent")
 
         panel = PetPanel(contentRect: NSRect(x: 0, y: 0, width: kWinW, height: kWinH),
                          styleMask: [.borderless, .nonactivatingPanel],
@@ -1412,6 +1954,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         view.needsDisplay = true
         debugPanel?.contentView?.needsDisplay = true
+
+        for prop in props {
+            prop.update(dt: dt, pet: pet, trampoline: pet.trampoline)
+            let a = prop.anchor
+            prop.panel.setFrameOrigin(NSPoint(x: prop.pos.x - a.x, y: prop.pos.y - a.y))
+            prop.panel.ignoresMouseEvents = !(prop.hitTest(screenPoint: mouse) || prop.view.mouseIsDown)
+            prop.view.needsDisplay = true
+        }
+    }
+
+    // MARK: Toys
+
+    private func addToy(_ kind: Prop.Kind) {
+        let a = pet.area
+        let x = min(max(pet.pos.x + pet.facing * 200, a.minX + 90), a.maxX - 90)
+        let prop = Prop(kind: kind, at: CGPoint(x: x, y: a.maxY - 120))   // drops in from the top
+        let p = PetPanel(contentRect: NSRect(origin: .zero, size: prop.winSize),
+                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = false
+        p.level = .floating
+        p.hidesOnDeactivate = false
+        p.isMovable = false
+        p.becomesKeyOnlyIfNeeded = true
+        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        let v = PropView(prop: prop)
+        v.onRemove = { [weak self, weak prop] in
+            guard let self, let prop else { return }
+            self.removeToy(prop)
+        }
+        p.contentView = v
+        prop.panel = p
+        prop.view = v
+        p.orderFrontRegardless()
+        if pet.hideBehind == nil { panel.orderFrontRegardless() }   // he stays in front of his toys
+        props.append(prop)
+        switch kind {
+        case .ball: pet.ball = prop
+        case .trampoline: pet.trampoline = prop
+        }
+        pet.say(Lines.newToy.pick, duration: 1.8)
+        statusItem.menu = buildMenu()
+    }
+
+    private func removeToy(_ prop: Prop) {
+        prop.panel.orderOut(nil)
+        props.removeAll { $0 === prop }
+        if pet.ball === prop { pet.ball = nil }
+        if pet.trampoline === prop { pet.trampoline = nil }
+        statusItem.menu = buildMenu()
+    }
+
+    private func toggleToy(_ kind: Prop.Kind) {
+        if let existing = props.first(where: { $0.kind == kind }) { removeToy(existing) } else { addToy(kind) }
     }
 
     private func positionWindow() {
@@ -1433,6 +2030,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add("Dance", #selector(menuDance))
         add("Take a Nap", #selector(menuNap))
         add("Hide!", #selector(menuHide))
+        menu.addItem(.separator())
+
+        // Toys ▸
+        let toys = NSMenu()
+        for (title, kind, action) in [("Soccer Ball", Prop.Kind.ball, #selector(menuToggleBall)),
+                                      ("Trampoline", Prop.Kind.trampoline, #selector(menuToggleTrampoline))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.state = props.contains { $0.kind == kind } ? .on : .off
+            toys.addItem(item)
+        }
+        toys.addItem(.separator())
+        let play = NSMenuItem(title: "Play with Ball", action: #selector(menuPlayBall), keyEquivalent: "")
+        play.target = self
+        play.isEnabled = pet.ball != nil
+        toys.addItem(play)
+        let bounce = NSMenuItem(title: "Jump on Trampoline", action: #selector(menuPlayTrampoline), keyEquivalent: "")
+        bounce.target = self
+        bounce.isEnabled = pet.trampoline != nil
+        toys.addItem(bounce)
+        toys.autoenablesItems = false
+        let toysItem = NSMenuItem(title: "Toys", action: nil, keyEquivalent: "")
+        toysItem.submenu = toys
+        menu.addItem(toysItem)
+
+        // Hat ▸
+        let hats = NSMenu()
+        for hat in Hat.allCases {
+            let item = NSMenuItem(title: hat.title, action: #selector(menuPickHat(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = hat.rawValue
+            item.state = pet.hat == hat ? .on : .off
+            hats.addItem(item)
+        }
+        let hatItem = NSMenuItem(title: "Hat", action: nil, keyEquivalent: "")
+        hatItem.submenu = hats
+        menu.addItem(hatItem)
+
+        let agent = NSMenuItem(title: "Secret Agent Mode", action: #selector(menuToggleAgent), keyEquivalent: "")
+        agent.target = self
+        agent.state = pet.agent ? .on : .off
+        menu.addItem(agent)
         menu.addItem(.separator())
         let chatty = NSMenuItem(title: "Chatty", action: #selector(menuToggleChatter), keyEquivalent: "")
         chatty.target = self
@@ -1486,6 +2125,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = buildMenu()
     }
     @objc private func menuQuit() { NSApp.terminate(nil) }
+
+    @objc private func menuToggleBall() { toggleToy(.ball) }
+    @objc private func menuToggleTrampoline() { toggleToy(.trampoline) }
+    @objc private func menuPlayBall() { pet.playBall() }
+    @objc private func menuPlayTrampoline() { pet.playTrampoline() }
+
+    @objc private func menuPickHat(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let hat = Hat(rawValue: raw) else { return }
+        pet.hat = hat
+        defaults.set(hat.rawValue, forKey: "hat")
+        pet.happyTime = 1.2
+        pet.say(hat.reaction, duration: 2.4)
+        statusItem.menu = buildMenu()
+    }
+
+    @objc private func menuToggleAgent() {
+        pet.agent.toggle()
+        defaults.set(pet.agent, forKey: "agent")
+        pet.say(pet.agent ? "*puts on shades* Agent Platypal, on the case." : "Mission complete. Back to civilian life.", duration: 2.6)
+        statusItem.menu = buildMenu()
+    }
 }
 
 @main

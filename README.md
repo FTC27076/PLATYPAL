@@ -24,11 +24,26 @@ from the paw icon in the menu bar, or right-click him.
 | Rest the cursor near his face | He boops it |
 | Drop him on (or just under/above) a desktop folder icon | He shrinks and falls into it, rummages around, then pops out and tells you something he found inside |
 | Leave the Mac alone for 3 minutes | Falls asleep, then greets you when you come back |
-| Right-click / menu bar paw | Say Something, Come Here, Backflip, Dance, Nap, Hide!, Chatty on/off, Quit |
+| Right-click / menu bar paw | Say Something, Come Here, Backflip, Dance, Nap, Hide!, Toys, Hat, Secret Agent Mode, Chatty on/off, Quit |
 
 On his own he picks from walking, running, idling, staring at your cursor, chasing it, hopping,
 dancing, backflips, naps (more naps after 11pm), and **hiding behind windows**: he walks to the edge of an app window that reaches down to the Dock, tiptoes behind it, peeks his head out, then jumps out with "Peekaboo!". He makes a remark every 35–90 seconds;
 some lines depend on the time of day.
+
+## Toys and dress-up
+
+Right-click him (or use the menu bar paw):
+
+- **Toys ▸ Soccer Ball** drops a ball onto the screen. He dribbles and kicks it around, and it bounces
+  off walls, off him (headers!) and off the trampoline. You can flick it with a click, or drag and throw it.
+- **Toys ▸ Trampoline** drops a trampoline he bounces on, sometimes with flips. Throw him onto it and he
+  goes boing. Drag it to move it.
+- **Toys ▸ Play with Ball / Jump on Trampoline** sends him to play right away. He also plays on his own.
+- Right-click a toy → **Put Away** removes it (or uncheck it in the Toys menu).
+- **Hat ▸** party hat, top hat, crown, propeller cap (it spins faster in the air) or beanie.
+- **Secret Agent Mode** gives him shades and an earpiece, and he drops spy one-liners.
+
+The hat and agent mode are remembered between launches.
 
 ## Permissions
 
