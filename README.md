@@ -3,6 +3,26 @@
 A small turquoise platypus that lives along the bottom of your Mac screen. He walks around,
 naps, dances, does backflips, chases your cursor, and says things now and then.
 
+## Two characters
+
+This repo builds two separate apps from two source files:
+
+| App | Source | Build |
+|---|---|---|
+| **Platypal**, the turquoise platypus | `Platypal.swift` | `./build.sh` → `Platypal.app` |
+| **Stix**, an acrobatic stick figure | `Stix.swift` | `./build-stix.sh` → `Stix.app` |
+
+They're independent copies. Changing one doesn't affect the other, and you can run both at once.
+Everything below about Platypal applies to Stix too (toys, hats, agent mode, hiding, folders,
+debug mode). Stix adds his own moves:
+
+- **Fighting the cursor.** Rest the cursor near his head and he throws a jab, cross, high-kick combo at it.
+- **Cursor swipes.** Whip the cursor through him fast and he either gets knocked flying or backflips out of the way ("Too slow!").
+- **Tricks on his own.** Handstand walks, cartwheels, front flips, backflips, and shadowboxing flurries.
+- **Hard landings.** Throw him hard and he often sticks a three-point superhero landing instead of getting dizzy.
+- **Wall kicks.** Throw him at a screen edge and he may kick off it ("Parkour!").
+- He has no face. You read his mood from his poses, and his red scarf streams behind him when he moves.
+
 ## Build & run
 
 ```bash
