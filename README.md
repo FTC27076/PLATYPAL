@@ -21,6 +21,11 @@ debug mode). Stix adds his own moves:
 - **Tricks on his own.** Handstand walks, cartwheels, front flips, backflips, and shadowboxing flurries.
 - **Hard landings.** Throw him hard and he often sticks a three-point superhero landing instead of getting dizzy.
 - **Wall kicks.** Throw him at a screen edge and he may kick off it ("Parkour!").
+- **MJ Mode** (right-click → MJ Mode) is a tribute outfit: a white vest, a white fedora with a black band
+  (it replaces whatever hat he had on) and one white glove. He dances on his own, and **MJ Moves ▸**
+  lets you pick a move: **Moonwalk** (faces one way, glides the other), **The Lean** (tips way forward
+  with his body stiff, then rocks back), **Spin** (three quick turns into a freeze), **Toe Stand**, and
+  **Kick & Point**. The setting is remembered between launches.
 - He has no face. You read his mood from his poses, and his red scarf streams behind him when he moves.
 
 ## Build & run

@@ -96,6 +96,14 @@ enum Lines {
     static let heroLanding = ["Superhero landing!", "*dramatic pose*", "Nailed it.", "Ta-da!"]
     static let knocked = ["Whoa!", "Hey! Watch where you're pointing!", "Cheap shot!"]
     static let dodge   = ["Too slow!", "Missed me!", "Nope!"]
+    static let mjChatter = [
+        "Hee-hee!",
+        "These shoes were made for gliding.",
+        "Smooth moves only.",
+        "*adjusts hat*",
+        "Is it getting groovy in here?",
+        "Watch the feet.",
+    ]
     static let rustle  = ["*rustle rustle*", "*muffled* ...so many files...", "*thump* Ow.", "*echo* Hellooo?"]
 
     static func folderFinding(folder: String, items: [String]) -> String {
@@ -120,8 +128,9 @@ enum Lines {
         }
     }
 
-    static func randomChatter(agent: Bool = false) -> String {
+    static func randomChatter(agent: Bool = false, mj: Bool = false) -> String {
         if agent && Bool.random() { return Lines.agent.pick }
+        if mj && Bool.random() { return Lines.mjChatter.pick }
         let hour = Calendar.current.component(.hour, from: Date())
         if Double.random(in: 0..<1) < 0.2 {
             switch hour {
@@ -282,12 +291,44 @@ enum FinderBridge {
 // MARK: - The stick figure (state + behaviour)
 
 enum Activity: Equatable {
-    case idle, walk, run, chase, stare, sleep, dance, boop, dizzy, held, airborne, hide, folder, fetch, trampoline, land, trick
+    case idle, walk, run, chase, stare, sleep, dance, boop, dizzy, held, airborne, hide, folder, fetch, trampoline, land, trick, mj
 }
 
 enum HidePhase { case approach, sneak, hidden, peek }
 
 enum TrickKind { case none, handstand, shadowbox, cartwheel, frontflip }
+
+/// Dance moves for MJ Mode.
+enum MJMove: String, CaseIterable {
+    case moonwalk, lean, spin, toeStand, kickPoint
+    var title: String {
+        switch self {
+        case .moonwalk: return "Moonwalk"
+        case .lean: return "The Lean"
+        case .spin: return "Spin"
+        case .toeStand: return "Toe Stand"
+        case .kickPoint: return "Kick & Point"
+        }
+    }
+    var duration: Double {
+        switch self {
+        case .moonwalk: return 4
+        case .lean: return 2.8
+        case .spin: return 1.9
+        case .toeStand: return 2.2
+        case .kickPoint: return 1.6
+        }
+    }
+    var line: String {
+        switch self {
+        case .moonwalk: return "Watch the feet."
+        case .lean: return "Lean with me..."
+        case .spin: return "Spin!"
+        case .toeStand: return "Hee-hee!"
+        case .kickPoint: return "Ow!"
+        }
+    }
+}
 
 enum Hat: String, CaseIterable {
     case none, party, top, crown, propeller, beanie
@@ -380,6 +421,8 @@ final class Pet {
 
     // Stick-figure moves
     var trickKind = TrickKind.none
+    var mj = false                     // MJ Mode: white vest, white fedora, glove, dance moves
+    var mjMove = MJMove.moonwalk
     var kickTime: Double = 0          // > 0 while his leg swings into the ball
     private var cursorSpeed: CGFloat = 0
     private var cursorDX: CGFloat = 0
@@ -453,6 +496,14 @@ final class Pet {
         if Bool.random() { say(Lines.flip.pick, duration: 1.5) }
     }
 
+    func dance(_ move: MJMove) {
+        guard canAct else { return }
+        set(.mj, duration: move.duration)
+        mjMove = move
+        walkPhase = 0
+        say(move.line, duration: 1.5)
+    }
+
     func trick() {
         guard canAct else { return }
         switch Int.random(in: 0..<4) {
@@ -510,7 +561,7 @@ final class Pet {
         say("Coming!", duration: 1.5)
     }
 
-    func saySomething() { say(Lines.randomChatter(agent: agent)) }
+    func saySomething() { say(Lines.randomChatter(agent: agent, mj: mj)) }
 
     // MARK: Toys
 
@@ -899,6 +950,7 @@ final class Pet {
             (6,  { self.dance() }),
             (6,  { self.backflip() }),
             (12, { self.trick() }),
+            (mj ? 30 : 0, { self.dance(MJMove.allCases.randomElement()!) }),
             (5,  { self.hop() }),
             (6,  { self.chase() }),
             (8,  { if !self.tryHide() { self.set(.idle, duration: 2) } }),
@@ -966,7 +1018,7 @@ final class Pet {
         // Random chatter
         if chatterEnabled && speech == nil && ![Activity.sleep, .held, .folder, .hide].contains(activity) {
             nextChatter -= dt
-            if nextChatter <= 0 { say(Lines.randomChatter(agent: agent)) }
+            if nextChatter <= 0 { say(Lines.randomChatter(agent: agent, mj: mj)) }
         }
 
         squash += (1 - squash) * min(1, fdt * 10)
@@ -1133,6 +1185,22 @@ final class Pet {
             if activityTime > activityDuration { set(.idle, duration: 1.5) }
 
         case .boop, .dizzy, .land:
+            if activityTime > activityDuration { set(.idle, duration: 1.5) }
+
+        case .mj:
+            switch mjMove {
+            case .moonwalk:                              // faces one way, glides the other
+                walkPhase += fdt * 5
+                pos.x -= facing * 55 * fdt
+                if pos.x <= minX || pos.x >= maxX { activityTime = activityDuration }
+            case .spin:                                  // three quick turns, then freeze
+                if activityTime < 1.1 {
+                    let turn = Int(activityTime / 0.09)
+                    if turn != lastBeat { lastBeat = turn; facing = -facing }
+                }
+            default:
+                break
+            }
             if activityTime > activityDuration { set(.idle, duration: 1.5) }
 
         case .trick:
@@ -1345,6 +1413,7 @@ final class PetView: NSView {
 
         // Body and head
         limb([hip, neck], 5.5, Palette.ink)
+        if p.mj { drawVest(ctx, hip: hip, neck: neck) }
         ctx.setFillColor(Palette.ink.cgColor)
         ctx.fillEllipse(in: CGRect(x: headC.x - headR, y: headC.y - headR, width: headR * 2, height: headR * 2))
 
@@ -1354,12 +1423,40 @@ final class PetView: NSView {
         // Near limbs
         limb([hip, kF, fF], 5, Palette.ink)
         limb([shoulder, eF, hF], 4.5, Palette.ink)
+        if p.mj {                                        // one white glove
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.fillEllipse(in: CGRect(x: hF.x - 3.2, y: hF.y - 3.2, width: 6.4, height: 6.4))
+            ctx.setStrokeColor(Palette.ink.cgColor); ctx.setLineWidth(1)
+            ctx.strokeEllipse(in: CGRect(x: hF.x - 3.2, y: hF.y - 3.2, width: 6.4, height: 6.4))
+        }
 
         if p.agent { drawAgentGear(ctx, head: headC, angle: ha) }
 
         hatAnchor = CGPoint(x: headC.x + sin(ha) * (headR - 1.5), y: headC.y + cos(ha) * (headR - 1.5))
         hatTilt = -ha
         drawHat(ctx, bob: 0, t: t)
+    }
+
+    /// MJ Mode: a white vest over his torso, with a V-neck and a few buttons.
+    private func drawVest(_ ctx: CGContext, hip: CGPoint, neck: CGPoint) {
+        let dx = neck.x - hip.x, dy = neck.y - hip.y
+        let len = max(1, hypot(dx, dy))
+        let u = CGVector(dx: dx / len, dy: dy / len)          // up the spine
+        let n = CGVector(dx: u.dy, dy: -u.dx)                 // sideways (toward his front)
+        func at(_ along: CGFloat, _ side: CGFloat) -> CGPoint {
+            CGPoint(x: hip.x + u.dx * along + n.dx * side, y: hip.y + u.dy * along + n.dy * side)
+        }
+        let vest = CGMutablePath()
+        vest.move(to: at(1, -6)); vest.addLine(to: at(1, 6))
+        vest.addLine(to: at(len - 3, 5.5)); vest.addLine(to: at(len - 9, 0))   // V-neck
+        vest.addLine(to: at(len - 3, -5.5)); vest.closeSubpath()
+        ctx.addPath(vest); ctx.setFillColor(NSColor.white.cgColor); ctx.fillPath()
+        ctx.addPath(vest); ctx.setStrokeColor(Palette.ink.cgColor); ctx.setLineWidth(1.3); ctx.strokePath()
+        ctx.setFillColor(Palette.ink.cgColor)
+        for along in [CGFloat(7), 12, 17] {
+            let b = at(along, 1.8)
+            ctx.fillEllipse(in: CGRect(x: b.x - 1, y: b.y - 1, width: 2, height: 2))
+        }
     }
 
     private func currentPose() -> Pose {
@@ -1420,6 +1517,49 @@ final class PetView: NSView {
             pose.torso = w * 0.22; pose.head = -w * 0.4
             pose.armF = (0.5 + w * 0.4, 0.9); pose.armB = (-0.5 + w * 0.4, -0.2)
             pose.legF = (0.2, 0.15); pose.legB = (-0.2, -0.1)
+            return pose
+        case .mj:
+            let k = p.activityTime
+            switch p.mjMove {
+            case .moonwalk:
+                // One leg flat and sliding back, the other knee bent with the heel up; they swap.
+                let a = (sin(p.walkPhase) + 1) / 2
+                pose.legF = (0.05 + 0.25 * a, 0.05 - 0.45 * a)
+                pose.legB = (-0.15 + 0.25 * (1 - a), -0.15 - 0.45 * (1 - a))
+                pose.torso = 0.08
+                pose.armF = (0.35, 1.3); pose.armB = (-0.25, 0.3)
+            case .lean:
+                // Body stays rigid and tips far forward from the ankles, then rocks back up.
+                let r = k < 0.5 ? k / 0.5 : (k < 2.1 ? 1 : max(0, 1 - (k - 2.1) / 0.6))
+                let L = CGFloat(r) * 0.8
+                pose.torso = L
+                pose.legF = (-L + 0.04, -L + 0.04); pose.legB = (-L - 0.04, -L - 0.04)
+                pose.armF = (-L + 0.15, -L + 0.15); pose.armB = (-L - 0.1, -L - 0.1)
+            case .spin:
+                if k < 1.1 {                             // arms tucked, legs together
+                    pose.armF = (0.6, 2.7); pose.armB = (0.4, 2.6)
+                    pose.legF = (0.04, 0.04); pose.legB = (-0.04, -0.04)
+                } else {                                 // freeze: one arm up, the other on hip
+                    pose.armF = (2.5, 2.6); pose.armB = (-0.75, 1.1)
+                    pose.legF = (0.2, -0.1); pose.legB = (-0.1, -0.1)
+                    pose.hipY = 46
+                }
+            case .toeStand:
+                // Up on the tips of his toes, knees together, hand on the hat brim.
+                pose.hipY = 48
+                pose.legF = (0.25, -0.12); pose.legB = (0.2, -0.16)
+                pose.torso = 0.02
+                pose.armF = (2.1, 3.0); pose.armB = (-0.3, -0.25)
+            case .kickPoint:
+                if k < 0.3 {                             // snap kick
+                    pose.legF = (1.5, 1.5); pose.legB = (-0.1, -0.1)
+                    pose.torso = -0.2
+                    pose.armF = (2.4, 2.4); pose.armB = (-1.0, -0.6)
+                } else {                                 // freeze, pointing up
+                    pose.legF = (0.15, 0.1); pose.legB = (-0.15, -0.15)
+                    pose.armF = (2.4, 2.4); pose.armB = (-0.75, 1.1)
+                }
+            }
             return pose
         case .stare:                                    // hands on hips
             pose.armF = (0.75, -1.1); pose.armB = (-0.75, 1.1)
@@ -1537,13 +1677,38 @@ final class PetView: NSView {
     }
 
     /// Hats sit on top of his head; drawStickman sets hatAnchor/hatTilt each frame.
+    /// MJ Mode hat: white fedora with a black band, tipped down at the front.
+    private func drawFedora(_ ctx: CGContext) {
+        ctx.rotate(by: -0.18)
+        let ink = Palette.ink.cgColor
+        let brim = CGPath(roundedRect: CGRect(x: -21, y: -1, width: 42, height: 5), cornerWidth: 2.5, cornerHeight: 2.5, transform: nil)
+        let crown = CGMutablePath()
+        crown.move(to: CGPoint(x: -12, y: 2))
+        crown.addLine(to: CGPoint(x: 12, y: 2))
+        crown.addQuadCurve(to: CGPoint(x: 9, y: 17), control: CGPoint(x: 12, y: 13))
+        crown.addQuadCurve(to: CGPoint(x: -9, y: 17), control: CGPoint(x: 0, y: 13))   // pinched top
+        crown.addQuadCurve(to: CGPoint(x: -12, y: 2), control: CGPoint(x: -12, y: 13))
+        crown.closeSubpath()
+        for path in [crown as CGPath, brim] {
+            ctx.addPath(path); ctx.setFillColor(NSColor.white.cgColor); ctx.fillPath()
+            ctx.addPath(path); ctx.setStrokeColor(ink); ctx.setLineWidth(1.8); ctx.strokePath()
+        }
+        ctx.setFillColor(ink)
+        ctx.fill(CGRect(x: -11.5, y: 3.5, width: 23, height: 4.5))      // black band
+    }
+
     private func drawHat(_ ctx: CGContext, bob: CGFloat, t: CGFloat) {
         let hat = pet.hat
-        guard hat != .none else { return }
+        guard hat != .none || pet.mj else { return }
         ctx.saveGState()
         ctx.translateBy(x: hatAnchor.x, y: hatAnchor.y + bob)
         ctx.rotate(by: hatTilt)
         ctx.scaleBy(x: 0.8, y: 0.8)
+        if pet.mj {
+            drawFedora(ctx)
+            ctx.restoreGState()
+            return
+        }
         let ink = Palette.outline.cgColor
         func outlined(_ path: CGPath, _ fill: NSColor, width: CGFloat = 2) {
             ctx.addPath(path); ctx.setFillColor(fill.cgColor); ctx.fillPath()
@@ -2068,6 +2233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pet.facing = Bool.random() ? 1 : -1
         pet.hat = Hat(rawValue: defaults.string(forKey: "hat") ?? "") ?? .none
         pet.agent = defaults.bool(forKey: "agent")
+        pet.mj = defaults.bool(forKey: "mj")
 
         panel = PetPanel(contentRect: NSRect(x: 0, y: 0, width: kWinW, height: kWinH),
                          styleMask: [.borderless, .nonactivatingPanel],
@@ -2251,6 +2417,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         agent.target = self
         agent.state = pet.agent ? .on : .off
         menu.addItem(agent)
+
+        let mjItem = NSMenuItem(title: "MJ Mode", action: #selector(menuToggleMJ), keyEquivalent: "")
+        mjItem.target = self
+        mjItem.state = pet.mj ? .on : .off
+        menu.addItem(mjItem)
+        let moves = NSMenu()
+        moves.autoenablesItems = false
+        for move in MJMove.allCases {
+            let item = NSMenuItem(title: move.title, action: #selector(menuMJMove(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = move.rawValue
+            item.isEnabled = pet.mj
+            moves.addItem(item)
+        }
+        let movesItem = NSMenuItem(title: "MJ Moves", action: nil, keyEquivalent: "")
+        movesItem.submenu = moves
+        menu.addItem(movesItem)
         menu.addItem(.separator())
         let chatty = NSMenuItem(title: "Chatty", action: #selector(menuToggleChatter), keyEquivalent: "")
         chatty.target = self
@@ -2317,6 +2500,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pet.happyTime = 1.2
         pet.say(hat.reaction, duration: 2.4)
         statusItem.menu = buildMenu()
+    }
+
+    @objc private func menuToggleMJ() {
+        pet.mj.toggle()
+        defaults.set(pet.mj, forKey: "mj")
+        if pet.mj {
+            pet.say("*puts on the white fedora* Hee-hee!", duration: 2.4)
+            pet.dance(.toeStand)
+        } else {
+            pet.say("Hanging up the dancing shoes. For now.", duration: 2.4)
+        }
+        statusItem.menu = buildMenu()
+    }
+
+    @objc private func menuMJMove(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let move = MJMove(rawValue: raw) else { return }
+        pet.dance(move)
     }
 
     @objc private func menuToggleAgent() {
